@@ -135,6 +135,7 @@ pacstrap /mnt           \
       networkmanager    \
       clevis            \
       tpm2-tools        \
+      openssh           \
       bash-completion
 
 # Copy Reflector Over
@@ -161,7 +162,7 @@ print "Barebones mkinitcpio uefi configuration"
 sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/keys/secret.jwe)"
-echo "HOOKS=(base udev autodetect modconf kms keyboard block zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+echo "HOOKS=(base udev autodetect modconf kms keyboard block clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
 
 cat > /mnt/etc/mkinitcpio.d/linux-lts.preset <<"EOF"
 # mkinitcpio preset file for the 'linux-lts' package
@@ -200,10 +201,13 @@ Server = https://zxcvfdsa.com/archzfs/$repo/$arch
 Server = http://archzfs.com/$repo/$arch
 EOF
 
-# Clevis TPM unlock preparation
-cp /etc/zfs/zroot.key /mnt/tmp/
+# Clevis TPM unlock preparation & getting hook
+cp /etc/zfs/zroot.key /mnt/tmp/zroot.key
 mkdir /mnt/keys
-
+mkdir /mnt/etc/initcpio/{hooks,install}
+print "Getting Clevis-Secret Hook"
+curl -o "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" /mnt/etc/initcpio/hooks/clevis-secret
+curl -o "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" /mnt/etc/initcpio/install/clevis-secret
 
 # Chroot!
 print "Chroot into System"
@@ -225,6 +229,7 @@ systemctl enable    \
   systemd-resolved  \
   systemd-timesyncd \
   reflector.timer   \
+  sshd              \
   zfs-import-cache  \
   zfs-mount         \
   zfs-import.target \
