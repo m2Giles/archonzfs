@@ -208,8 +208,8 @@ Server = http://archzfs.com/archzfs/x86_64
 EOF
 
 # Clevis TPM unlock preparation & getting hook
-cp /etc/zfs/zroot.key /mnt/tmp/zroot.key
 mkdir /mnt/keys
+cp /etc/zfs/zroot.key /mnt/keys/zroot.key
 echo "Getting Clevis-Secret Hook"
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" -o /mnt/etc/initcpio/hooks/clevis-secret
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
@@ -223,7 +223,8 @@ pacman -Syu --noconfirm zfs-dkms zfs-utils
 ln -sf /usr/share/zoneinfo/US/Eastern /etc/localtime
 hwclock --systohc
 locale-gen
-clevis-encrypt-tpm2 '{}' < /tmp/zroot.key > /keys/secret.jwe
+clevis-encrypt-tpm2 '{}' < /keys/zroot.key > /keys/secret.jwe
+shred /keys/zroot.key
 mkinitcpio -P
 bootctl install
 mkdir -p /etc/zfs/zfs-list.cache
