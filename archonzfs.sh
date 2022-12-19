@@ -8,11 +8,11 @@ ask () {
 }
 
 # Get ZFS module on ISO
-print "Getting ZFS Module"
+echo "Getting ZFS Module"
 curl -s https://raw.githubusercontent.com/eoli3n/archiso-zfs/master/init | bash
 
 # Partition Drive
-print "Choose Drive"
+echo "Choose Drive"
 select ENTRY in $(ls /dev/disk/by-id);
 do
   DISK="/dev/disk/by-id/$ENTRY"
@@ -24,7 +24,7 @@ done
 ask "Do you want to repartition $DISK?"
   if [[ $REPLY =~ ^[Yy]$ ]]
   then
-    print "Partitioning Drive"
+    echo "Partitioning Drive"
     # EFI Partition
     sgdisk -Zo "$DISK"
     ask "Size of EFI Partition in [M]?"
@@ -40,12 +40,12 @@ ask "Do you want to repartition $DISK?"
 
     # Format EFI Partition
     sleep 1
-    print "Formatting EFI Partition"
+    echo "Formatting EFI Partition"
     mkfs.vfat "$EFI"
   fi
 
 # Set ZFS passphrase
-print "Set ZFS passphrase for Encrypted Datasets"
+echo "Set ZFS passphrase for Encrypted Datasets"
 while true; do
   read -s -p "ZFS passphrase: " pass1
   echo
@@ -59,7 +59,7 @@ unset pass1
 unset pass2
 
 # Create ZFS pool
-print "Create ZFS Pool"
+echo "Create ZFS Pool"
 zpool create -f -o ashift=12              \
                 -o autotrim=on            \
                 -O acltype=posixacl       \
@@ -78,14 +78,14 @@ zpool create -f -o ashift=12              \
                 zroot "$ZFS"
 
 # Build Dataset Tree
-print "Create Root Dataset"
+echo "Create Root Dataset"
 zfs create -o mountpoint=none zroot/ROOT
 zfs create -o mountpoint=/ -o canmount=noauto zroot/ROOT/default
-print "Create Data Datasets"
+echo "Create Data Datasets"
 zfs create -o mountpoint=none zroot/data
 zfs create -o mountpoint=/home zroot/data/home
 zfs create -o mountpoint=/root zroot/data/home/root
-print "Create System Datasets"
+echo "Create System Datasets"
 zfs create -o mountpoint=/var -o canmount=off zroot/var
 zfs create zroot/var/log
 zfs create -o mountpoint=/var/lib -o canmount=off zroot/var/lib
@@ -93,7 +93,7 @@ zfs create zroot/var/lib/libvirt
 zfs create zroot/var/lib/lxd
 
 # Export and Reimport Pools
-print "Export and Reimport Pools, mount partitions"
+echo "Export and Reimport Pools, mount partitions"
 zpool export zroot
 zpool import -d /dev/disk/by-id -R /mnt zroot -N
 
@@ -105,15 +105,15 @@ mount "$EFI" /mnt/efi
 mkdir -p /mnt/efi/EFI/Linux
 
 #Generate zfs hostid
-print "Generate Hostid"
+echo "Generate Hostid"
 zgenhostid
 
 #Set Bootfs
-print "Set ZFS bootfs"
+echo "Set ZFS bootfs"
 zpool set bootfs=zroot/ROOT/default zroot
 
 #Zpool Cache
-print "Create zpool cachefile"
+echo "Create zpool cachefile"
 mkdir -p /mnt/etc/zfs
 zpool set cachefile=/etc/zfs/zpool.cache zroot
 cp /etc/zfs/zpool.cache /mnt/etc/zfs/
@@ -122,12 +122,12 @@ cp /etc/zfs/zpool.cache /mnt/etc/zfs/
 root_dataset=zroot/ROOT/default
 
 # Sort Mirrors
-print "Sorting Fastest Mirrors in US"
+echo "Sorting Fastest Mirrors in US"
 echo "--country US" >> /etc/xdg/reflector/reflector.conf
 systemctl start reflector
 
 # Install
-print "Pacstrap"
+echo "Pacstrap"
 pacstrap /mnt           \
       base              \
       base-devel        \
@@ -147,7 +147,7 @@ pacstrap /mnt           \
 # Copy Reflector Over
 cp /etc/xdg/reflector/reflector.conf /mnt/etc/xdg/reflector/reflector.conf
 # FSTAB
-print "Generate /etc/fstab and remove ZFS entries"
+echo "Generate /etc/fstab and remove ZFS entries"
 genfstab -U /mnt | grep -v "zroot" | tr -s '\n' | sed 's/\/mnt//'  > /mnt/etc/fstab
 
 # Set Hostname and configure /etc/hosts
@@ -164,7 +164,7 @@ echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
 sed -i 's/#\(en_US.UTF-8\)/\1/' /mnt/etc/locale.gen
 
 # mkinitcpio
-print "Barebones mkinitcpio uefi configuration"
+echo "Barebones mkinitcpio uefi configuration"
 sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/keys/secret.jwe)"
@@ -193,7 +193,7 @@ EOF
 echo "rw quiet nowatchdog zfs=auto" > /mnt/etc/kernel/cmdline
 
 # Copy ZFS files
-print "Copy ZFS files"
+echo "Copy ZFS files"
 cp /etc/hostid /mnt/etc/hostid
 cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache
 
@@ -211,12 +211,12 @@ EOF
 cp /etc/zfs/zroot.key /mnt/tmp/zroot.key
 mkdir /mnt/keys
 mkdir /mnt/etc/initcpio/{hooks,install}
-print "Getting Clevis-Secret Hook"
+echo "Getting Clevis-Secret Hook"
 curl -o "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" /mnt/etc/initcpio/hooks/clevis-secret
 curl -o "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" /mnt/etc/initcpio/install/clevis-secret
 
 # Chroot!
-print "Chroot into System"
+echo "Chroot into System"
 arch-chroot /mnt /bin/bash -xe << EOF
 pacman-key -r DDF7DB817396A49B2A2723F7403BD972F75D9D76
 pacman-key --lsign-key DDF7DB817396A49B2A2723F7403BD972F75D9D76
@@ -247,13 +247,13 @@ EOF
 arch-chroot /mnt /bin/passwd
 
 # Umount
-print "Umount all partitions"
+echo "Umount all partitions"
 umount /mnt/efi
 zfs umount -a
 umount -R /mnt
 
 #Export Zpool
-print "Export zpool"
+echo "Export zpool"
 zpool export zroot
 
 echo "Done"
