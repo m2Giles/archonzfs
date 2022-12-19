@@ -167,7 +167,7 @@ sed -i 's/#\(en_US.UTF-8\)/\1/' /mnt/etc/locale.gen
 echo "Barebones mkinitcpio uefi configuration"
 sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
-echo "FILES=(/keys/secret.jwe)"
+echo "FILES=(/keys/secret.jwe)" >> /mnt/etc/mkinitcpio.conf
 echo "HOOKS=(base udev autodetect modconf kms keyboard block clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
 
 cat > /mnt/etc/mkinitcpio.d/linux-lts.preset <<"EOF"
