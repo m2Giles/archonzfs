@@ -203,16 +203,16 @@ ln -sf /run/systemd/resolve/stub-resolv.conf /mnt/etc/resolve.conf
 # Add archzfs repo
 cat >> /mnt/etc/pacman.conf << EOF
 [archzfs]
-Server = https://zxcvfdsa.com/archzfs/$repo/$arch
-Server = http://archzfs.com/$repo/$arch
+Server = https://zxcvfdsa.com/archzfs/archzfs/x86_64
+Server = http://archzfs.com/archzfs/x86_64
 EOF
 
 # Clevis TPM unlock preparation & getting hook
 cp /etc/zfs/zroot.key /mnt/tmp/zroot.key
 mkdir /mnt/keys
 echo "Getting Clevis-Secret Hook"
-curl -o "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" /mnt/etc/initcpio/hooks/clevis-secret
-curl -o "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" /mnt/etc/initcpio/install/clevis-secret
+curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" -o /mnt/etc/initcpio/hooks/clevis-secret
+curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
 
 # Chroot!
 echo "Chroot into System"
