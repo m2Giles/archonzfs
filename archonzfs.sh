@@ -41,7 +41,7 @@ ask "Do you want to repartition $DISK?"
     # Format EFI Partition
     sleep 1
     echo "Formatting EFI Partition"
-    mkfs.vfat "$EFI"
+    mkfs.vfat -F32 "$EFI"
   fi
 
 # Set ZFS passphrase
