@@ -210,7 +210,6 @@ EOF
 # Clevis TPM unlock preparation & getting hook
 cp /etc/zfs/zroot.key /mnt/tmp/zroot.key
 mkdir /mnt/keys
-mkdir /mnt/etc/initcpio/{hooks,install}
 echo "Getting Clevis-Secret Hook"
 curl -o "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" /mnt/etc/initcpio/hooks/clevis-secret
 curl -o "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" /mnt/etc/initcpio/install/clevis-secret
