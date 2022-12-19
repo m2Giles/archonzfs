@@ -2,6 +2,11 @@
 
 set -e
 
+ask () {
+    read -p "> $1 " -r
+    echo
+}
+
 # Get ZFS module on ISO
 print "Getting ZFS Module"
 curl -s https://raw.githubusercontent.com/eoli3n/archiso-zfs/master/init | bash
@@ -13,6 +18,7 @@ do
   DISK="/dev/disk/by-id/$ENTRY"
   echo "$DISK" > /tmp/disk
   echo "Installing on $ENTRY"
+  break
 done
 
 ask "Do you want to repartition $DISK?"
