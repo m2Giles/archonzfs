@@ -30,10 +30,18 @@ ask "Do you want to repartition $DISK?"
     ask "Size of EFI Partition in [M]?"
     sgdisk -n1:1M:+"$REPLY"M -t1:EF00 "$DISK"
     EFI="$DISK-part1"
+    
+    ask "Do you want SWAP Partition?"
+        if [[ $REPLY =~ ^[Yy]$ ]]
+        then
+            ask "Size of SWAP Partition in [G]"
+            sgdisk -n2:0:+"$REPLY"G -t2:8200 "$DISK"
+            SWAPPART="$DISK-part2"
+        fi
 
     # ZFS Partition
-    sgdisk -n2:0:0 -t2:BF00 "$DISK"
-    ZFS="$DISK-part2"
+    sgdisk -n3:0:0 -t3:BF00 "$DISK"
+    ZFS="$DISK-part3"
 
     # notify Kernel
     partprobe "$DISK"
@@ -43,6 +51,16 @@ ask "Do you want to repartition $DISK?"
     echo "Formatting EFI Partition"
     mkfs.vfat -F32 "$EFI"
   fi
+
+if [[ -z $SWAPPART ]]
+then
+    echo "Create Encrypted SWAP"
+    SWAP=/dev/mapper/swap
+    cryptsetup luksFormat $SWAPPART
+    cryptsetup open $SWAPPART $SWAP
+    mkswap $SWAP
+    swapon $SWAP
+fi
 
 # Set ZFS passphrase
 echo "Set ZFS passphrase for Encrypted Datasets"
@@ -131,6 +149,8 @@ echo "Pacstrap"
 pacstrap /mnt           \
       base              \
       base-devel        \
+      linux             \
+      linux-headers     \
       linux-lts         \
       linux-lts-headers \
       linux-firmware    \
@@ -168,7 +188,23 @@ echo "Barebones mkinitcpio uefi configuration"
 sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/keys/secret.jwe)" >> /mnt/etc/mkinitcpio.conf
-echo "HOOKS=(base udev autodetect modconf kms keyboard block clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+if [[ -f $SWAPPART ]]
+then
+    ask "Do you want Resume Support (SWAP > MEMORY)?"
+    if [[ $REPLY =~ ^[Yy]$ ]]
+        then
+            SWAPRESUME=1
+            pacstrap /mnt       \
+            luksmeta            \
+            libpwquality        \
+            tpm2-abmrd
+            echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis encrypt resume clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+        else
+            echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis encrypt clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+    fi
+else
+    echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+fi
 
 cat > /mnt/etc/mkinitcpio.d/linux-lts.preset <<"EOF"
 # mkinitcpio preset file for the 'linux-lts' package
@@ -181,17 +217,44 @@ PRESETS=('default' 'fallback')
 
 #default_config="/etc/mkinitcpio.conf"
 default_image="/boot/initramfs-linux-lts.img"
-default_efi_image="/efi/EFI/Linux/archlinux-linux-lts.efi"
+default_uki="/efi/EFI/Linux/archlinux-linux-lts.efi"
+default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp"
+
+#fallback_config="/etc/mkinitcpio.conf"
+fallback_image="/boot/initramfs-linux-lts-fallback.img"
+fallback_uki="/efi/EFI/Linux/archlinux-linux-lts-fallback.efi"
+fallback_options="-S autodetect --splash /usr/share/systemd/bootctl/splash-arch.bmp"
+EOF
+
+cat > /mnt/etc/mkinitcpio.d/linux.preset <<"EOF"
+# mkinitcpio preset file for the 'linux' package
+
+ALL_config="/etc/mkinitcpio.conf"
+ALL_kver="/boot/vmlinuz-linux"
+ALL_microcode="/boot/intel-ucode.img"
+
+PRESETS=('default' 'fallback')
+
+#default_config="/etc/mkinitcpio.conf"
+default_image="/boot/initramfs-linux.img"
+default_uki="/efi/EFI/Linux/archlinux-linux.efi"
 default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp"
 
 #fallback_config="/etc/mkinitcpio.conf"
 fallback_image="/boot/initramfs-linux-fallback.img"
-fallback_efi_image="/efi/EFI/Linux/archlinux-linux-lts-fallback.efi"
+fallback_uki="/efi/EFI/Linux/archlinux-linux-fallback.efi"
 fallback_options="-S autodetect --splash /usr/share/systemd/bootctl/splash-arch.bmp"
 EOF
 
-echo "rw quiet nowatchdog zfs=auto" > /mnt/etc/kernel/cmdline
+echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog" > /mnt/etc/kernel/cmdline
 
+if [[ ! -z $SWAPPART ]]
+    echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap nowatchdog" > /mnt/etc/kernel/cmdline
+fi
+
+if [[ ! -z $SWAPRESUME ]]
+    echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog" > /mnt/etc/kernel/cmdline
+fi
 # Copy ZFS files
 echo "Copy ZFS files"
 cp /etc/hostid /mnt/etc/hostid
@@ -214,6 +277,30 @@ echo "Getting Clevis-Secret Hook"
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" -o /mnt/etc/initcpio/hooks/clevis-secret
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
 
+if [[ ! -z $SWAPPART ]]
+    then
+    curl "https://github.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
+    curl "https://github.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
+fi
+
+echo "make AUR builder"
+arch-chroot /mnt /bin/bash -xe << EOF
+useradd -m builder
+echo "builder ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/builder
+EOF
+
+echo "Build Plymouth and configure"
+arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+git clone https://aur.archlinux.org/plymouth-git
+cd /home/builder/plymouth-git
+makepkg -si --noconfirm
+EOF"
+
+cp /mnt/usr/share/plymouth/arch-logo.png /mnt/usr/share/plymouth/themes/spinner/watermark.png
+sed -i 's/WatermarkVerticalAlignment=.96/WatermarkVerticalAlignment=.5' /mnt/usr/share/plymouth/themes/spinner/spinner.plymouth
+echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
+
+
 # Chroot!
 echo "Chroot into System"
 arch-chroot /mnt /bin/bash -xe << EOF
@@ -225,6 +312,7 @@ hwclock --systohc
 locale-gen
 clevis-encrypt-tpm2 '{}' < /keys/zroot.key > /keys/secret.jwe
 shred /keys/zroot.key
+rm /keys/zroot.key
 mkinitcpio -P
 bootctl install
 mkdir -p /etc/zfs/zfs-list.cache
@@ -243,8 +331,23 @@ systemctl enable    \
   zfs-zed
 EOF
 
+if [[ ! -z $SWAP ]]
+    then
+    echo $SWAPPART > /etc/swapsetup
+    arch-chroot /mnt /bin/bash -xe << "EOF"
+    clevis luks bind -d $(cat /etc/swapsetup) tpm2 '{}'
+    EOF
+fi
+
 # Set root passwd
 arch-chroot /mnt /bin/passwd
+
+ask "Do you want to chroot??"
+  if [[ $REPLY =~ ^[Yy]$ ]]
+  then
+  arch-chroot /mnt
+fi
+
 
 # Umount
 echo "Umount all partitions"
