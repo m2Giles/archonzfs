@@ -333,10 +333,7 @@ EOF
 
 if [[ ! -z $SWAP ]]
     then
-    echo $SWAPPART > /etc/swapsetup
-    arch-chroot /mnt /bin/bash -xe << "EOF"
-    clevis luks bind -d $(cat /etc/swapsetup) tpm2 '{}'
-    EOF
+    arch-chroot /mnt /bin/clevis-luks-bind -d $SWAPPART tpm2 '{}'
 fi
 
 # Set root passwd
