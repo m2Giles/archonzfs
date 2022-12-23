@@ -275,8 +275,8 @@ curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
 
 if [[ -n $SWAPPART ]]; then
-    curl "https://github.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
-    curl "https://github.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
+    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
+    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
 fi
 
 echo "make AUR builder"
@@ -293,7 +293,6 @@ makepkg -si --noconfirm
 EOF"
 
 cp /mnt/usr/share/plymouth/arch-logo.png /mnt/usr/share/plymouth/themes/spinner/watermark.png
-sed -i 's/WatermarkVerticalAlignment=.96/WatermarkVerticalAlignment=.5' /mnt/usr/share/plymouth/themes/spinner/spinner.plymouth
 echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
 
 
@@ -327,17 +326,16 @@ systemctl enable    \
   zfs-zed
 EOF
 
-if [[ -n $SWAP ]]
-    then
+if [[ -n $SWAP ]]; then
     arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" tpm2 '{}'
+    arch-chroot /mnt /bin/mkinitcpio -P
 fi
 
 # Set root passwd
 arch-chroot /mnt /bin/passwd
 
-ask "Do you want to chroot??"
-  if [[ $REPLY =~ ^[Yy]$ ]]
-  then
+ask "Do you want to chroot?? If yes, exit to continue script after chroot"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
   arch-chroot /mnt
 fi
 
