@@ -30,7 +30,7 @@ ask "Do you want to repartition $DISK?"
     ask "Size of EFI Partition in [M]?"
     sgdisk -n1:1M:+"$REPLY"M -t1:EF00 "$DISK"
     EFI="$DISK-part1"
-    
+
     ask "Do you want SWAP Partition?"
         if [[ $REPLY =~ ^[Yy]$ ]]
         then
@@ -52,12 +52,12 @@ ask "Do you want to repartition $DISK?"
     mkfs.vfat -F32 "$EFI"
   fi
 
-if [[ -z $SWAPPART ]]
+if [[ -n $SWAPPART ]]
 then
     echo "Create Encrypted SWAP"
     SWAP=/dev/mapper/swap
-    cryptsetup luksFormat $SWAPPART
-    cryptsetup open $SWAPPART $SWAP
+    cryptsetup luksFormat "$SWAPPART"
+    cryptsetup open "$SWAPPART" swap
     mkswap $SWAP
     swapon $SWAP
 fi
@@ -65,9 +65,9 @@ fi
 # Set ZFS passphrase
 echo "Set ZFS passphrase for Encrypted Datasets"
 while true; do
-  read -s -p "ZFS passphrase: " pass1
+  read -s -p -r "ZFS passphrase: " pass1
   echo
-  read -s -p "Verify ZFS passphrase: " pass2
+  read -s -p -r "Verify ZFS passphrase: " pass2
   echo
   [ "$pass1" = "$pass2" ] && break || echo "Oops, please try again"
 done
@@ -136,9 +136,6 @@ mkdir -p /mnt/etc/zfs
 zpool set cachefile=/etc/zfs/zpool.cache zroot
 cp /etc/zfs/zpool.cache /mnt/etc/zfs/
 
-# System Install
-root_dataset=zroot/ROOT/default
-
 # Sort Mirrors
 echo "Sorting Fastest Mirrors in US"
 echo "--country US" >> /etc/xdg/reflector/reflector.conf
@@ -188,7 +185,7 @@ echo "Barebones mkinitcpio uefi configuration"
 sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/keys/secret.jwe)" >> /mnt/etc/mkinitcpio.conf
-if [[ -f $SWAPPART ]]
+if [[ -n $SWAPPART ]]
 then
     ask "Do you want Resume Support (SWAP > MEMORY)?"
     if [[ $REPLY =~ ^[Yy]$ ]]
@@ -248,11 +245,11 @@ EOF
 
 echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog" > /mnt/etc/kernel/cmdline
 
-if [[ ! -z $SWAPPART ]]
+if [[ -n $SWAPPART ]]; then
     echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap nowatchdog" > /mnt/etc/kernel/cmdline
 fi
 
-if [[ ! -z $SWAPRESUME ]]
+if [[ -n $SWAPRESUME ]]; then
     echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog" > /mnt/etc/kernel/cmdline
 fi
 # Copy ZFS files
@@ -277,8 +274,7 @@ echo "Getting Clevis-Secret Hook"
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" -o /mnt/etc/initcpio/hooks/clevis-secret
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
 
-if [[ ! -z $SWAPPART ]]
-    then
+if [[ -n $SWAPPART ]]; then
     curl "https://github.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
     curl "https://github.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
 fi
@@ -331,9 +327,9 @@ systemctl enable    \
   zfs-zed
 EOF
 
-if [[ ! -z $SWAP ]]
+if [[ -n $SWAP ]]
     then
-    arch-chroot /mnt /bin/clevis-luks-bind -d $SWAPPART tpm2 '{}'
+    arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" tpm2 '{}'
 fi
 
 # Set root passwd
