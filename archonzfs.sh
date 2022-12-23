@@ -245,9 +245,9 @@ if [[ -n $SWAPPART ]]; then
      pacstrap /mnt       \
             luksmeta            \
             libpwquality        \
-            tpm2-abmrd
+            tpm2-abrmd
     curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
-    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/install/clevis
+    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
     arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" tpm2 '{}'
     if [[ -n $SWAPRESUME ]]; then
         echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog" > /mnt/etc/kernel/cmdline
@@ -298,16 +298,15 @@ echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
 # Chroot!
 echo "Chroot into System"
 arch-chroot /mnt /bin/bash -xe << EOF
+clevis-encrypt-tpm2 '{}' < /keys/zroot.key > /keys/secret.jwe
+shred /keys/zroot.key
+rm /keys/zroot.key
 pacman-key -r DDF7DB817396A49B2A2723F7403BD972F75D9D76
 pacman-key --lsign-key DDF7DB817396A49B2A2723F7403BD972F75D9D76
 pacman -Syu --noconfirm zfs-dkms zfs-utils
 ln -sf /usr/share/zoneinfo/US/Eastern /etc/localtime
 hwclock --systohc
 locale-gen
-clevis-encrypt-tpm2 '{}' < /keys/zroot.key > /keys/secret.jwe
-shred /keys/zroot.key
-rm /keys/zroot.key
-mkinitcpio -P
 bootctl install
 mkdir -p /etc/zfs/zfs-list.cache
 touch /etc/zfs/zfs-list.cache/zroot
