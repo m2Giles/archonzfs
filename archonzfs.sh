@@ -65,9 +65,9 @@ fi
 # Set ZFS passphrase
 echo "Set ZFS passphrase for Encrypted Datasets"
 while true; do
-  read -s -p -r "ZFS passphrase: " pass1
+  read -s -p "ZFS passphrase: " pass1
   echo
-  read -s -p -r "Verify ZFS passphrase: " pass2
+  read -s -p "Verify ZFS passphrase: " pass2
   echo
   [ "$pass1" = "$pass2" ] && break || echo "Oops, please try again"
 done
@@ -191,10 +191,6 @@ then
     if [[ $REPLY =~ ^[Yy]$ ]]
         then
             SWAPRESUME=1
-            pacstrap /mnt       \
-            luksmeta            \
-            libpwquality        \
-            tpm2-abmrd
             echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis encrypt resume clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
         else
             echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis encrypt clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
@@ -246,12 +242,21 @@ EOF
 echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog" > /mnt/etc/kernel/cmdline
 
 if [[ -n $SWAPPART ]]; then
-    echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap nowatchdog" > /mnt/etc/kernel/cmdline
+     pacstrap /mnt       \
+            luksmeta            \
+            libpwquality        \
+            tpm2-abmrd
+    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
+    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/install/clevis
+    arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" tpm2 '{}'
+    if [[ -n $SWAPRESUME ]]; then
+        echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog" > /mnt/etc/kernel/cmdline
+    else
+        echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap nowatchdog" > /mnt/etc/kernel/cmdline
+    fi
 fi
 
-if [[ -n $SWAPRESUME ]]; then
-    echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog" > /mnt/etc/kernel/cmdline
-fi
+
 # Copy ZFS files
 echo "Copy ZFS files"
 cp /etc/hostid /mnt/etc/hostid
@@ -274,11 +279,6 @@ echo "Getting Clevis-Secret Hook"
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" -o /mnt/etc/initcpio/hooks/clevis-secret
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
 
-if [[ -n $SWAPPART ]]; then
-    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
-    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/blob/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
-fi
-
 echo "make AUR builder"
 arch-chroot /mnt /bin/bash -xe << EOF
 useradd -m builder
@@ -294,7 +294,6 @@ EOF"
 
 cp /mnt/usr/share/plymouth/arch-logo.png /mnt/usr/share/plymouth/themes/spinner/watermark.png
 echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
-
 
 # Chroot!
 echo "Chroot into System"
@@ -326,10 +325,6 @@ systemctl enable    \
   zfs-zed
 EOF
 
-if [[ -n $SWAP ]]; then
-    arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" tpm2 '{}'
-    arch-chroot /mnt /bin/mkinitcpio -P
-fi
 
 # Set root passwd
 arch-chroot /mnt /bin/passwd
