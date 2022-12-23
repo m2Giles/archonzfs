@@ -154,8 +154,8 @@ print "Pacstrap"
 pacstrap /mnt           \
       base              \
       base-devel        \
-      #linux             \
-      #linux-headers     \
+      linux             \
+      linux-headers     \
       linux-lts         \
       linux-lts-headers \
       linux-firmware    \
@@ -258,9 +258,9 @@ if [[ -n $SWAPPART ]]; then
     curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
     arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" tpm2 '{}'
     if [[ -n $SWAPRESUME ]]; then
-        echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog" > /mnt/etc/kernel/cmdline
+        echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog" > /mnt/etc/kernel/cmdline
     else
-        echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAP | awk '{ print $2 }' | cut -d\" -f 2):swap nowatchdog" > /mnt/etc/kernel/cmdline
+        echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap nowatchdog" > /mnt/etc/kernel/cmdline
     fi
 fi
 
@@ -281,19 +281,20 @@ Server = http://archzfs.com/archzfs/x86_64
 EOF
 
 # Clevis TPM unlock preparation & getting hook
+print "TPM2 unlock of zfs root dataset"
 mkdir /mnt/keys
 cp /etc/zfs/zroot.key /mnt/keys/zroot.key
 print "Getting Clevis-Secret Hook"
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" -o /mnt/etc/initcpio/hooks/clevis-secret
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
 
-echo "make AUR builder"
+print "make AUR builder"
 arch-chroot /mnt /bin/bash -xe << EOF
 useradd -m builder
 echo "builder ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/builder
 EOF
 
-echo "Build Plymouth and configure"
+print "Build Plymouth and configure"
 arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
 git clone https://aur.archlinux.org/plymouth-git
 cd /home/builder/plymouth-git
@@ -305,7 +306,7 @@ sed -i 's/.96/.5/' /mnt/usr/share/plymouth/themes/spinner/spinner.plymouth
 echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
 
 # Chroot!
-echo "Chroot into System"
+print "Chroot into System"
 arch-chroot /mnt /bin/bash -xe << EOF
 clevis-encrypt-tpm2 '{}' < /keys/zroot.key > /keys/secret.jwe
 shred /keys/zroot.key
@@ -335,22 +336,17 @@ EOF
 
 
 # Set root passwd
+print "Set Root Password"
 arch-chroot /mnt /bin/passwd
 
-ask "Do you want to chroot?? If yes, exit to continue script after chroot"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-  arch-chroot /mnt
-fi
-
-
 # Umount
-echo "Umount all partitions"
+print "Umount all partitions"
 umount /mnt/efi
 zfs umount -a
 umount -R /mnt
 
 #Export Zpool
-echo "Export zpool"
+print "Export zpool"
 zpool export zroot
 
 echo "Done"
