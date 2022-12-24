@@ -165,6 +165,11 @@ pacstrap /mnt           \
       openssh           \
       bash-completion
 
+# Mask mkinitcpio Hook to Speed up installs
+print "Move mkinitcpio pacman Hooks to speed up installs"
+mv /mnt/usr/share/libalpm/hooks/60-mkinitcpio-remove.hook /mnt/60-mkinitcpio-remove.hook
+mv /mnt/usr/share/libalpm/hooks/90-mkinitcpio-install.hook /mnt/90-mkinitcpio-install.hook
+
 # Copy Reflector Over
 cp /etc/xdg/reflector/reflector.conf /mnt/etc/xdg/reflector/reflector.conf
 # FSTAB
@@ -347,10 +352,11 @@ if [[ -n "$ZFSREMOTE" ]]; then
   git clone https://aur.archlinux.org/mbuffer.git
   cd /home/builder/mbuffer
   makepkg -si --noconfirm
+  cd /home/builder
   git clone https://aur.archlinux.org/zfsbootmenu.git
   cd /home/builder/zfsbootmenu
   makepkg -si --noconfirm
-  EOF"
+EOF"
 else
   mkdir -p /mnt/efi/EFI/zbm
   curl https://get.zfsbootmenu.org/efi -o /mnt/efi/EFI/zbm/zfsbootmenu.EFI
@@ -370,7 +376,7 @@ if [[ -n "$ZFSREMOTE" ]]; then
     dropbearkey -t "${keytype}" -f "/etc/dropbear/dropbear_${keytype}_host_key"
   done
   touch /etc/dropbear/root_key
-  echo "dropbear_list=2222" > /etc/dropbear/dropbear.conf
+  echo "dropbear_listen=2222" > /etc/dropbear/dropbear.conf
 EOF
   sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
   echo "HOOKS=(base udev autodetect modconf block filesystems keyboard netconf dropbear zfsbootmenu)" >> /mnt/etc/zfsbootmenu/mkinitcpio.conf
@@ -392,6 +398,11 @@ EOF
 EOF
 fi
 
+print "Make UKIs and Restore mkinitcpio"
+
+mv /mnt/60-mkinitcpio-remove.hook/ mnt/usr/share/libalpm/hooks/60-mkinitcpio-remove.hook
+mv /mnt/90-mkinitcpio-install.hook /mnt/usr/share/libalpm/hooks/90-mkinitcpio-install.hook
+arch-chroot /mnt /bin/mkinitcpio -P
 arch-chroot /mnt /bin/generate-zbm
 cat > /mnt/efi/loader/entries/zbm.conf <<"EOF"
 title ZFSBootMenu
