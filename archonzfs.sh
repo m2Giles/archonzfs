@@ -9,10 +9,6 @@ ask () {
 
 print () {
     echo -e "\n\033[1m> $1\033[0m\n"
-    if [[ -n "$debug" ]]
-    then
-      read -rp "press enter to continue"
-    fi
 }
 
 # Get ZFS module on ISO
@@ -246,8 +242,8 @@ fallback_image="/boot/initramfs-linux-fallback.img"
 fallback_uki="/efi/EFI/Linux/archlinux-linux-fallback.efi"
 fallback_options="-S autodetect --splash /usr/share/systemd/bootctl/splash-arch.bmp"
 EOF
-
-echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog" > /mnt/etc/kernel/cmdline
+CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog"
+echo "$CMDLINE" > /mnt/etc/kernel/cmdline
 
 if [[ -n $SWAPPART ]]; then
      pacstrap /mnt       \
@@ -258,9 +254,11 @@ if [[ -n $SWAPPART ]]; then
     curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
     arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" tpm2 '{}'
     if [[ -n $SWAPRESUME ]]; then
-        echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog" > /mnt/etc/kernel/cmdline
+        CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog"
+        echo "$CMDLINE" > /mnt/etc/kernel/cmdline
     else
-        echo "rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap nowatchdog" > /mnt/etc/kernel/cmdline
+        CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap nowatchdog"
+        echo "$CMDLINE" > /mnt/etc/kernel/cmdline
     fi
 fi
 
@@ -334,6 +332,86 @@ systemctl enable    \
   zfs-zed
 EOF
 
+print "Install ZFSBootMenu"
+ask "Do you want SSH Access to ZFSBootMenu"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    ZFSREMOTE=1
+  fi
+if [[ -n "$ZFSREMOTE" ]]; then
+  pacstrap /mnt kexec-tools fzf util-linux mkinitcpio-netconf mkinitcpio-utils dropbear psmisc --noconfirm
+  arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+  git clone https://aur.archlinux.org/perl-boolean.git
+  cd /home/builder/perl-boolean
+  makepkg -si --noconfirm
+  cd /home/builder
+  git clone https://aur.archlinux.org/mbuffer.git
+  cd /home/builder/mbuffer
+  makepkg -si --noconfirm
+  git clone https://aur.archlinux.org/zfsbootmenu.git
+  cd /home/builder/zfsbootmenu
+  makepkg -si --noconfirm
+  EOF"
+else
+  mkdir -p /mnt/efi/EFI/zbm
+  curl https://get.zfsbootmenu.org/efi -o /mnt/efi/EFI/zbm/zfsbootmenu.EFI
+fi
+
+zfs set org.zfsbootmenu:commandline="$CMDLINE" zroot/ROOT
+
+if [[ -n "$ZFSREMOTE" ]]; then
+  print "Configure ZFSBootMenu"
+  print "Be sure to copy in ssh publickeys to /mnt/etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
+  mkdir -p /mnt/etc/zfsbootmenu/initcpio/{hooks,install}
+  curl "https://raw.githubusercontent.com/ahesford/mkinitcpio-dropbear/master/dropbear_hook" -o /mnt/etc/zfsbootmenu/initcpio/hooks/dropbear
+  curl "https://raw.githubusercontent.com/ahesford/mkinitcpio-dropbear/master/dropbear_install" -o /mnt/etc/zfsbootmenu/initcpio/install/dropbear
+  mkdir -p /mnt/etc/dropbear
+  arch-chroot /mnt /bin/bash -xe << "EOF"
+  for keytype in rsa ecdsa ed25519; do
+    dropbearkey -t "${keytype}" -f "/etc/dropbear/dropbear_${keytype}_host_key"
+  done
+  touch /etc/dropbear/root_key
+  echo "dropbear_list=2222" > /etc/dropbear/dropbear.conf
+EOF
+  sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
+  echo "HOOKS=(base udev autodetect modconf block filesystems keyboard netconf dropbear zfsbootmenu)" >> /mnt/etc/zfsbootmenu/mkinitcpio.conf
+  cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
+  Global:
+    ManageImages: true
+    InitCPIO: true
+    InitCPIOConfig: /etc/zfsbootmenu/mkinitcpio.conf
+    InitCPIOHookDirs:
+      - /etc/zfsbootmenu/initcpio
+      - /usr/lib/initcpio
+  EFI:
+    ImageDir: /efi/EFI/zbm
+    Versions: false
+    Enabled: true
+  Kernel:
+    CommandLine: ro quiet loglevel=0 ip=dhcp zbm.show
+    Prefix: zfsbootmenu
+EOF
+fi
+
+arch-chroot /mnt /bin/generate-zbm
+cat > /mnt/efi/loader/entries/zbm.conf <<"EOF"
+title ZFSBootMenu
+efi   /EFI/zbm/zfsbootmenu.EFI
+EOF
+cat > /mnt/efi/loader/entries/zbm-backup.conf <<"EOF"
+title ZFSBootMenu-Backup
+efi   /EFI/zbm/zfsbootmenu-backup.EFI
+EOF
+
+# Select Default Boot Option
+print "Select Default Boot Option"
+ls /mnt/efi/EFI/Linux >> /tmp/bootlist
+ls /mnt/efi/EFI/zbm >> /tmp/bootlist
+select ENTRY in $(cat /tmp/bootlist);
+do
+  arch-chroot /mnt /bin/bootctl set-default "$ENTRY"
+  echo "Setting $ENTRY as default boot option"
+  break
+done
 
 # Set root passwd
 print "Set Root Password"
@@ -349,4 +427,4 @@ umount -R /mnt
 print "Export zpool"
 zpool export zroot
 
-echo "Done"
+echo -e "\e[32mAll OK"
