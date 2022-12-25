@@ -314,9 +314,11 @@ EOF
 
 print "Build Plymouth and configure"
 arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
-git clone https://aur.archlinux.org/plymouth-git
-cd /home/builder/plymouth-git
+git clone https://aur.archlinux.org/paru-bin
+cd /home/builder/paru-bin
 makepkg -si --noconfirm
+cd /home/builder
+paru -S
 EOF"
 
 cp /mnt/usr/share/plymouth/arch-logo.png /mnt/usr/share/plymouth/themes/spinner/watermark.png
@@ -358,38 +360,20 @@ ask "Do you want SSH Access to ZFSBootMenu"
     ZFSREMOTE=1
   fi
 if [[ -n "$ZFSREMOTE" ]]; then
-  pacstrap /mnt kexec-tools fzf util-linux mkinitcpio-netconf mkinitcpio-utils dropbear psmisc --noconfirm
   arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
-  git clone https://aur.archlinux.org/perl-boolean.git
-  cd /home/builder/perl-boolean
-  makepkg -si --noconfirm
-  cd /home/builder
-  git clone https://aur.archlinux.org/mbuffer.git
-  cd /home/builder/mbuffer
-  makepkg -si --noconfirm
-  cd /home/builder
-  git clone https://aur.archlinux.org/zfsbootmenu.git
-  cd /home/builder/zfsbootmenu
-  makepkg -si --noconfirm
+  paru -S mkinitcpio-netconf mkinitcpio-utils dropbear zfsbootmenu --noconfirm --sudoloop
 EOF"
 else
-  mkdir -p /mnt/efi/EFI/zbm
-  curl https://get.zfsbootmenu.org/efi -o /mnt/efi/EFI/zbm/zfsbootmenu.EFI
+  arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+  paru -S zfsbootmenu --noconfirm --sudoloop
+EOF"
 fi
 
 zfs set org.zfsbootmenu:commandline="$CMDLINE" zroot/ROOT
 
-# ask "Set Default Kernel for ZFSBootMenu"
-# select ENTRY in $(ls /mnt/boot/vmlinuz*);
-# do
-#   zfs set org.zfsbootmenu:kernel="$ENTRY" zroot/ROOT
-#   echo "Installing on $ENTRY"
-#   break
-# done
-
+print "Configure ZFSBootMenu"
 if [[ -n "$ZFSREMOTE" ]]; then
-  print "Configure ZFSBootMenu"
-  print "Be sure to copy in ssh publickeys to /mnt/etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
+  print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
   mkdir -p /mnt/etc/zfsbootmenu/initcpio/{hooks,install}
   curl "https://raw.githubusercontent.com/ahesford/mkinitcpio-dropbear/master/dropbear_hook" -o /mnt/etc/zfsbootmenu/initcpio/hooks/dropbear
   curl "https://raw.githubusercontent.com/ahesford/mkinitcpio-dropbear/master/dropbear_install" -o /mnt/etc/zfsbootmenu/initcpio/install/dropbear
@@ -419,6 +403,24 @@ EOF
     CommandLine: ro quiet loglevel=0 ip=dhcp zbm.show
     Prefix: zfsbootmenu
 EOF
+  print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
+else
+  cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
+  Global:
+    ManageImages: true
+    InitCPIO: true
+    InitCPIOConfig: /etc/zfsbootmenu/mkinitcpio.conf
+    InitCPIOHookDirs:
+      - /etc/zfsbootmenu/initcpio
+      - /usr/lib/initcpio
+  EFI:
+    ImageDir: /efi/EFI/zbm
+    Versions: false
+    Enabled: true
+  Kernel:
+    CommandLine: ro quiet loglevel=0 zbm.show
+    Prefix: zfsbootmenu
+EOF
 fi
 
 print "Make UKIs & ZFSBootMenu and Restore mkinitcpio pacman hooks"
@@ -427,9 +429,14 @@ mv /mnt/60-mkinitcpio-remove.hook /mnt/usr/share/libalpm/hooks/60-mkinitcpio-rem
 mv /mnt/90-mkinitcpio-install.hook /mnt/usr/share/libalpm/hooks/90-mkinitcpio-install.hook
 arch-chroot /mnt /bin/mkinitcpio -P
 arch-chroot /mnt /bin/generate-zbm
+arch-chroot /mnt /bin/generate-zbm
 cat > /mnt/efi/loader/entries/zbm.conf <<"EOF"
 title ZFSBootMenu
 efi   /EFI/zbm/zfsbootmenu.EFI
+EOF
+cat > /mnt/efi/loader/entries/zbm-backup.conf <<"EOF"
+title ZFSBootMenu (Backup)
+efi   /EFI/zbm/zfsbootmenu-backup.EFI
 EOF
 
 print "Cleanup AUR Builder"
@@ -443,16 +450,22 @@ EOF
 print "Set Root Account Password"
 arch-chroot /mnt /bin/passwd
 
+print "Make Install Snapshot"
 zfs snapshot zroot/ROOT/default@install
 
-# Umount
-print "Umount all partitions"
-umount /mnt/efi
-zfs umount -a
-umount -R /mnt
+ask "Do you want to chroot"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    arch-chroot /mnt /bin/bash
+  fi
 
-#Export Zpool
-print "Export zpool"
-zpool export zroot
+ask "Do you want to unmount all partitions and export zpool?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    print "Umount all partitions"
+    umount /mnt/efi
+    zfs umount -a
+    umount -R /mnt
+    print "Export zpool"
+    zpool export zroot
+  fi
 
 echo -e "\e[32mAll OK"
