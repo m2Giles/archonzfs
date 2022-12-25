@@ -39,7 +39,7 @@ ask "Do you want to repartition $DISK?"
         if [[ $REPLY =~ ^[Yy]$ ]]
         then
             ask "Size of SWAP Partition in [G]"
-            sgdisk -n2:0:+"$REPLY"G -t2:8200 "$DISK"
+            sgdisk -n2:0:+"$REPLY"G -t2:8200 -A 2:set:63 "$DISK"
             SWAPPART="$DISK-part2"
         fi
 
@@ -60,8 +60,19 @@ if [[ -n $SWAPPART ]]
 then
     print "Create Encrypted SWAP"
     SWAP=/dev/mapper/swap
-    cryptsetup luksFormat "$SWAPPART"
-    cryptsetup open "$SWAPPART" swap
+    while true; do
+      read -s -p "SWAP LUKs passphrase: " pass1
+      echo
+      read -s -p "SWAP LUKs passphrase: " pass2
+      echo
+      [ "$pass1" = "$pass2" ] && break || echo "Oops, please try again"
+    done
+    echo "$pass2" > /tmp/swap.key
+    unset pass1
+    unset pass2
+    cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
+    print "Open Encrypted SWAP Container"
+    cryptsetup open --key-file=/tmp/swap.key "$SWAPPART" swap
     mkswap $SWAP
     swapon $SWAP
 fi
@@ -171,6 +182,7 @@ mv /mnt/usr/share/libalpm/hooks/60-mkinitcpio-remove.hook /mnt/60-mkinitcpio-rem
 mv /mnt/usr/share/libalpm/hooks/90-mkinitcpio-install.hook /mnt/90-mkinitcpio-install.hook
 
 # Copy Reflector Over
+print "Copy Reflector Configuration"
 cp /etc/xdg/reflector/reflector.conf /mnt/etc/xdg/reflector/reflector.conf
 # FSTAB
 print "Generate /etc/fstab and remove ZFS entries"
@@ -190,7 +202,7 @@ echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
 sed -i 's/#\(en_US.UTF-8\)/\1/' /mnt/etc/locale.gen
 
 # mkinitcpio
-print "mkinitcpio uefi configuration"
+print "mkinitcpio UKI configuration"
 sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/keys/secret.jwe)" >> /mnt/etc/mkinitcpio.conf
@@ -247,26 +259,9 @@ fallback_image="/boot/initramfs-linux-fallback.img"
 fallback_uki="/efi/EFI/Linux/archlinux-linux-fallback.efi"
 fallback_options="-S autodetect --splash /usr/share/systemd/bootctl/splash-arch.bmp"
 EOF
+
 CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog"
 echo "$CMDLINE" > /mnt/etc/kernel/cmdline
-
-if [[ -n $SWAPPART ]]; then
-     pacstrap /mnt       \
-            luksmeta            \
-            libpwquality        \
-            tpm2-abrmd
-    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
-    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
-    arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" tpm2 '{}'
-    if [[ -n $SWAPRESUME ]]; then
-        CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap resume=$SWAP nowatchdog"
-        echo "$CMDLINE" > /mnt/etc/kernel/cmdline
-    else
-        CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap nowatchdog"
-        echo "$CMDLINE" > /mnt/etc/kernel/cmdline
-    fi
-fi
-
 
 # Copy ZFS files
 print "Copy ZFS files"
@@ -290,6 +285,26 @@ cp /etc/zfs/zroot.key /mnt/keys/zroot.key
 print "Getting Clevis-Secret Hook"
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" -o /mnt/etc/initcpio/hooks/clevis-secret
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
+
+if [[ -n $SWAPPART ]]; then
+     pacstrap /mnt       \
+            luksmeta            \
+            libpwquality        \
+            tpm2-abrmd
+    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
+    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
+    cp /tmp/swap.key /mnt/keys/swap.key
+    arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" -k /keys/swap.key tpm2 '{}'
+    shred /mnt/keys/swap.key
+    rm /mnt/keys/swap.key
+    if [[ -n $SWAPRESUME ]]; then
+        CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap:allow-discards resume=$SWAP nowatchdog"
+        echo "$CMDLINE" > /mnt/etc/kernel/cmdline
+    else
+        CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap:allow-discards nowatchdog"
+        echo "$CMDLINE" > /mnt/etc/kernel/cmdline
+    fi
+fi
 
 print "make AUR builder"
 arch-chroot /mnt /bin/bash -xe << EOF
@@ -364,6 +379,14 @@ fi
 
 zfs set org.zfsbootmenu:commandline="$CMDLINE" zroot/ROOT
 
+# ask "Set Default Kernel for ZFSBootMenu"
+# select ENTRY in $(ls /mnt/boot/vmlinuz*);
+# do
+#   zfs set org.zfsbootmenu:kernel="$ENTRY" zroot/ROOT
+#   echo "Installing on $ENTRY"
+#   break
+# done
+
 if [[ -n "$ZFSREMOTE" ]]; then
   print "Configure ZFSBootMenu"
   print "Be sure to copy in ssh publickeys to /mnt/etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
@@ -398,9 +421,9 @@ EOF
 EOF
 fi
 
-print "Make UKIs and Restore mkinitcpio"
+print "Make UKIs & ZFSBootMenu and Restore mkinitcpio pacman hooks"
 
-mv /mnt/60-mkinitcpio-remove.hook/ mnt/usr/share/libalpm/hooks/60-mkinitcpio-remove.hook
+mv /mnt/60-mkinitcpio-remove.hook /mnt/usr/share/libalpm/hooks/60-mkinitcpio-remove.hook
 mv /mnt/90-mkinitcpio-install.hook /mnt/usr/share/libalpm/hooks/90-mkinitcpio-install.hook
 arch-chroot /mnt /bin/mkinitcpio -P
 arch-chroot /mnt /bin/generate-zbm
@@ -408,25 +431,19 @@ cat > /mnt/efi/loader/entries/zbm.conf <<"EOF"
 title ZFSBootMenu
 efi   /EFI/zbm/zfsbootmenu.EFI
 EOF
-cat > /mnt/efi/loader/entries/zbm-backup.conf <<"EOF"
-title ZFSBootMenu-Backup
-efi   /EFI/zbm/zfsbootmenu-backup.EFI
+
+print "Cleanup AUR Builder"
+arch-chroot /mnt /bin/bash -xe << EOF
+userdel builder
+rm /etc/sudoers.d/builder
+rm -rf /home/builder
 EOF
 
-# Select Default Boot Option
-print "Select Default Boot Option"
-ls /mnt/efi/EFI/Linux >> /tmp/bootlist
-ls /mnt/efi/EFI/zbm >> /tmp/bootlist
-select ENTRY in $(cat /tmp/bootlist);
-do
-  arch-chroot /mnt /bin/bootctl set-default "$ENTRY"
-  echo "Setting $ENTRY as default boot option"
-  break
-done
-
 # Set root passwd
-print "Set Root Password"
+print "Set Root Account Password"
 arch-chroot /mnt /bin/passwd
+
+zfs snapshot zroot/ROOT/default@install
 
 # Umount
 print "Umount all partitions"
