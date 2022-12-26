@@ -318,7 +318,7 @@ git clone https://aur.archlinux.org/paru-bin
 cd /home/builder/paru-bin
 makepkg -si --noconfirm
 cd /home/builder
-paru -S
+paru -S plymouth-git --noconfirm
 EOF"
 
 cp /mnt/usr/share/plymouth/arch-logo.png /mnt/usr/share/plymouth/themes/spinner/watermark.png
@@ -361,11 +361,11 @@ ask "Do you want SSH Access to ZFSBootMenu"
   fi
 if [[ -n "$ZFSREMOTE" ]]; then
   arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
-  paru -S mkinitcpio-netconf mkinitcpio-utils dropbear zfsbootmenu --noconfirm --sudoloop
+  paru -S mkinitcpio-netconf mkinitcpio-utils dropbear zfsbootmenu --noconfirm
 EOF"
 else
   arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
-  paru -S zfsbootmenu --noconfirm --sudoloop
+  paru -S zfsbootmenu --noconfirm
 EOF"
 fi
 
@@ -450,10 +450,54 @@ EOF
 print "Set Root Account Password"
 arch-chroot /mnt /bin/passwd
 
+ask "Would you like to enable Secureboot?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    print "Must have Secureboot enabled and Secureboot in setup Mode"
+    pacstrap /mnt sbctl
+    arch-chroot /mnt sbctl status
+    ask "Is Secureboot Enabled and in Setup Mode?"
+      if [[ $REPLY =~ ^[Yy]$ ]]
+      then
+        print "Generate and Enroll-Keys with microsoft vendor keys"
+        arch-chroot /mnt /bin/bash -xe << EOF
+        sbctl create-keys
+        sbctl enroll-keys --microsoft
+        sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
+        sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
+        sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
+        sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
+        sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
+        sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
+        sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
+        sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+EOF
+      secureboot=1
+      else
+        print "Configure Secureboot Settings on a later boot"
+      fi
+    fi
+if [[ -n "$secureboot" ]]; then
+  ask "Do you wish to bind tpm2 unlocks to tpm2 measurements?"
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      cp /etc/zfs/zroot.key /mnt/keys/zroot.key
+      if [[ -f /tmp/swap.key ]]; then
+        cp /tmp/swap.key /mnt/keys/swap.key
+        arch-chroot /mnt /bin/clevis-luks-unbind -d "$SWAPPART" -s 1 -f
+        arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" -k /keys/swap.key tpm2 '{"pcr_bank":"sha256","pcr_ids":"1,7"}'
+        shred /mnt/keys/swap.key
+        rm /mnt/keys/swap.key
+      fi
+        arch-chroot /mnt /bin/clevis-encrypt-tpm2 '{"pcr_bank":"sha256","pcr_ids":"1,7"}' < /keys/zroot.key > /keys/secret.jwe
+        shred /mnt/keys/zroot.key
+        rm /mnt/keys/zroot.key
+    fi
+fi
+
+
 print "Make Install Snapshot"
 zfs snapshot zroot/ROOT/default@install
 
-ask "Do you want to chroot"
+ask "Do you want to chroot?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     arch-chroot /mnt /bin/bash
   fi
