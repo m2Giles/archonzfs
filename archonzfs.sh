@@ -450,12 +450,14 @@ EOF
 print "Set Root Account Password"
 arch-chroot /mnt /bin/passwd
 
-ask "Would you like to enable Secureboot?"
+ask "Would you like to sign EFI executables and enroll keys for Secureboot Support?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
-    print "Must have Secureboot enabled and Secureboot in setup Mode"
+    print "Must have Secureboot in Setup Mode"
     pacstrap /mnt sbctl
-    arch-chroot /mnt sbctl status
-    ask "Is Secureboot Enabled and in Setup Mode?"
+    arch-chroot /mnt /bin/bash -xe << EOF
+    sbctl status
+EOF
+    ask "Is Secureboot in Setup Mode?"
       if [[ $REPLY =~ ^[Yy]$ ]]
       then
         print "Generate and Enroll-Keys with microsoft vendor keys"
@@ -470,14 +472,18 @@ ask "Would you like to enable Secureboot?"
         sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
         sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
         sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+        sbctl verify
 EOF
       secureboot=1
       else
-        print "Configure Secureboot Settings on a later boot"
+        print "Configure Secureboot Support on a later boot"
       fi
     fi
 if [[ -n "$secureboot" ]]; then
-  ask "Do you wish to bind tpm2 unlocks to tpm2 measurements?"
+    arch-chroot /mnt /bin/bash -xe << EOF
+    sbctl status
+EOF
+  ask "Do you wish to bind tpm2 unlocks to tpm2 measurements? (Secureboot must be enabled)"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
       cp /etc/zfs/zroot.key /mnt/keys/zroot.key
       if [[ -f /tmp/swap.key ]]; then
