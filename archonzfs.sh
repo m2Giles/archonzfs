@@ -61,13 +61,18 @@ then
     print "Create Encrypted SWAP"
     SWAP=/dev/mapper/swap
     while true; do
-      read -s -p "SWAP LUKs passphrase: " pass1
       echo
-      read -s -p "SWAP LUKs passphrase: " pass2
+      echo "SWAP LUKs passphrase:"
+      read -r -s pass1
+      echo
+      echo "Verify SWAP LUKs passphrase:"
+      read -r -s pass2
       echo
       [ "$pass1" = "$pass2" ] && break || echo "Oops, please try again"
     done
     echo "$pass2" > /tmp/swap.key
+    chmod 000 /tmp/swap.key
+    print "SWAP LUKs Passphrase can be reviewed at /tmp/swap.key"
     unset pass1
     unset pass2
     cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
@@ -80,14 +85,18 @@ fi
 # Set ZFS passphrase
 print "Set ZFS passphrase for Encrypted Datasets"
 while true; do
-  read -s -p "ZFS passphrase: " pass1
-  echo
-  read -s -p "Verify ZFS passphrase: " pass2
-  echo
+      echo
+      echo "ZFS passphrase:"
+      read -r -s pass1
+      echo
+      echo "Verify ZFS passphrase:"
+      read -r -s pass2
+      echo
   [ "$pass1" = "$pass2" ] && break || echo "Oops, please try again"
 done
 echo "$pass2" > /etc/zfs/zroot.key
 chmod 000 /etc/zfs/zroot.key
+print "ZFS Passphrase can be reviewed at /etc/zfs/zroot.key"
 unset pass1
 unset pass2
 
@@ -472,7 +481,6 @@ EOF
         sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
         sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
         sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
-        sbctl verify
 EOF
       secureboot=1
       else
@@ -483,7 +491,7 @@ if [[ -n "$secureboot" ]]; then
     arch-chroot /mnt /bin/bash -xe << EOF
     sbctl status
 EOF
-  ask "Do you wish to bind tpm2 unlocks to tpm2 measurements? (Secureboot must be enabled)"
+  ask "Do you wish to bind tpm2 unlocks to tpm2 measurements? (Secureboot must be Enabled)"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
       cp /etc/zfs/zroot.key /mnt/keys/zroot.key
       if [[ -f /tmp/swap.key ]]; then
