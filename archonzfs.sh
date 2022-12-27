@@ -8,7 +8,7 @@ ask () {
 }
 
 secureask () {
-    read -p -s "> $1 " -r
+    read -p -s "> $1 "
     echo
 }
 
@@ -58,7 +58,7 @@ ask "Do you want to repartition $DISK?"
           ask "Do you want Resume Support (Requires SWAP > MEMORY)?"
             if [[ $REPLY =~ ^[Yy]$ ]]; then
               SWAPRESUME=1
-              SWAPMIN=$(free -h | sed '-2p' | awk '{ print $2 }')
+              SWAPMIN=$(free -h | sed -n '2p' | awk '{ print $2 }')
               SWAPMIN=${SWAPMIN::-2}
               while true; do
                 ask "Size of SWAP Partition in [GiB]? Minimum is $SWAPMIN"
