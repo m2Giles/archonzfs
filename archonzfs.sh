@@ -7,6 +7,20 @@ ask () {
     echo
 }
 
+secureask () {
+    read -p -s "> $1 " -r
+    echo
+}
+
+umountandexport () {
+    print "Umount all partitions"
+    umount /mnt/efi
+    zfs umount -a
+    umount -R /mnt
+    print "Export zpool"
+    zpool export zroot
+}
+
 print () {
     echo -e "\n\033[1m> $1\033[0m\n"
 }
@@ -31,15 +45,29 @@ ask "Do you want to repartition $DISK?"
     echo "Partitioning Drive"
     # EFI Partition
     sgdisk -Zo "$DISK"
-    ask "Size of EFI Partition in [M]?"
+    while true; do
+      ask "Size of EFI Partition in MiB. Minimum is 512:"
+      (( "$REPLY" >= 512 )) && break || echo "Oops. Too small, minimum is 512"
+    done
     sgdisk -n1:1M:+"$REPLY"M -t1:EF00 "$DISK"
     EFI="$DISK-part1"
 
-    ask "Do you want SWAP Partition?"
+    ask "Do you want a SWAP Partition?"
         if [[ $REPLY =~ ^[Yy]$ ]]
         then
-            ask "Size of SWAP Partition in [G]"
-            sgdisk -n2:0:+"$REPLY"G -t2:8200 -A 2:set:63 "$DISK"
+          ask "Do you want Resume Support (Requires SWAP > MEMORY)?"
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+              SWAPRESUME=1
+              SWAPMIN=$(free -h | sed '-2p' | awk '{ print $2 }')
+              SWAPMIN=${SWAPMIN::-2}
+              while true; do
+                ask "Size of SWAP Partition in [GiB]? Minimum is $SWAPMIN"
+                (( "$REPLY" >= "$SWAPMIN" )) && break || echo "Oops. Too small, minimum is $SWAPMIN for Resume Support"
+              done
+            else
+              ask "Size of SWAP Partition in [G]"
+            fi
+            sgdisk -n2:0:+"$REPLY"G -t2:8200 "$DISK"
             SWAPPART="$DISK-part2"
         fi
 
@@ -54,29 +82,29 @@ ask "Do you want to repartition $DISK?"
     sleep 1
     echo "Formatting EFI Partition"
     mkfs.vfat -F32 "$EFI"
+  else
+    if [[ -z "$EFI" || -z "$ZFS" ]]; then
+      print "Export Partitions for EFI and ZFS installation locations and rerun script"
+    fi
   fi
 
-if [[ -n $SWAPPART ]]
-then
+if [[ -n $SWAPPART ]]; then
     print "Create Encrypted SWAP"
     SWAP=/dev/mapper/swap
     while true; do
       echo
-      echo "SWAP LUKs passphrase:"
-      read -r -s pass1
+      secureask "SWAP LUKs passphrase: " PASS1
       echo
-      echo "Verify SWAP LUKs passphrase:"
-      read -r -s pass2
+      secureask "Verify SWAP LUKs passphrase: " PASS1
       echo
-      [ "$pass1" = "$pass2" ] && break || echo "Oops, please try again"
+      [ "$PASS1" = "$PASS2" ] && break || echo "Oops, please try again"
     done
-    echo "$pass2" > /tmp/swap.key
+    echo "$PASS2" > /tmp/swap.key
     chmod 000 /tmp/swap.key
-    print "SWAP LUKs Passphrase can be reviewed at /tmp/swap.key"
-    unset pass1
-    unset pass2
+    print "SWAP LUKs Passphrase can be reviewed at /tmp/swap.key prior to reboot"
+    unset PASS1
+    unset PASS2
     cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
-    print "Open Encrypted SWAP Container"
     cryptsetup open --key-file=/tmp/swap.key "$SWAPPART" swap
     mkswap $SWAP
     swapon $SWAP
@@ -86,19 +114,39 @@ fi
 print "Set ZFS passphrase for Encrypted Datasets"
 while true; do
       echo
-      echo "ZFS passphrase:"
-      read -r -s pass1
+      secureask "ZFS passphrase: " PASS1
       echo
-      echo "Verify ZFS passphrase:"
-      read -r -s pass2
+      secureask "Verify ZFS passphrase: " PASS2
       echo
-  [ "$pass1" = "$pass2" ] && break || echo "Oops, please try again"
+  [ "$PASS1" = "$PASS2" ] && break || echo "Oops, please try again"
 done
-echo "$pass2" > /etc/zfs/zroot.key
+echo "$PASS2" > /etc/zfs/zroot.key
 chmod 000 /etc/zfs/zroot.key
-print "ZFS Passphrase can be reviewed at /etc/zfs/zroot.key"
-unset pass1
-unset pass2
+print "ZFS PASSphrase can be reviewed at /etc/zfs/zroot.key prior to reboot"
+unset PASS1
+unset PASS2
+
+ask "Please enter hostname:" HOSTNAME
+
+ask "Do you want SSH Access to ZFSBootMenu"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    ZFSREMOTE=1
+  fi
+
+print "Default Boot Choice is archlinux-linux.efi UKI\nKCL Editor is disabled, use ZFSBootMenu to edit KCL\n"
+ask "Do you wish to change the Default Boot Choice?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    CHANGEDEFAULT=1
+  fi
+ask "Would you like to sign EFI executables and enroll keys for Secureboot Support?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    SECUREBOOT=1
+  fi
+
+ask "Do you want to unmount all partitions and export zpool?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    UMOUNT=1
+  fi
 
 # Create ZFS pool
 print "Create ZFS Pool"
@@ -122,7 +170,7 @@ zpool create -f -o ashift=12              \
 # Build Dataset Tree
 print "Create Root Dataset"
 zfs create -o mountpoint=none zroot/ROOT
-zfs create -o mountpoint=/ -o canmount=noauto zroot/ROOT/default
+zfs create -o mountpoint=/ -o canmount=noauto zroot/ROOT/arch
 print "Create Data Datasets"
 zfs create -o mountpoint=none zroot/data
 zfs create -o mountpoint=/home zroot/data/home
@@ -138,21 +186,20 @@ zfs create zroot/var/lib/lxd
 print "Export and Reimport Pools, mount partitions"
 zpool export zroot
 zpool import -d /dev/disk/by-id -R /mnt zroot -N
-
 zfs load-key zroot
-zfs mount zroot/ROOT/default
+zfs mount zroot/ROOT/arch
 zfs mount -a
 mkdir -p /mnt/efi
 mount "$EFI" /mnt/efi
 mkdir -p /mnt/efi/EFI/Linux
 
 #Generate zfs hostid
-print "Generate Hostid"
-zgenhostid
+print "Generate Hostid for ZFS"
+zgenhostid -f "$(hostid)"
 
 #Set Bootfs
 print "Set ZFS bootfs"
-zpool set bootfs=zroot/ROOT/default zroot
+zpool set bootfs=zroot/ROOT/arch zroot
 
 #Zpool Cache
 print "Create zpool cachefile"
@@ -190,6 +237,11 @@ print "Move mkinitcpio pacman Hooks to speed up installs"
 mv /mnt/usr/share/libalpm/hooks/60-mkinitcpio-remove.hook /mnt/60-mkinitcpio-remove.hook
 mv /mnt/usr/share/libalpm/hooks/90-mkinitcpio-install.hook /mnt/90-mkinitcpio-install.hook
 
+print "Configure Pacman for Color and Parallel Downloads"
+sed -i 's/#\(Color\)/\1/' /mnt/etc/pacman.conf
+sed -i "/Color/a\\ILoveCandy" /mnt/etc/pacman.conf
+sed -i 's/#\(Parallel\)/\1/' /mnt/etc/pacman.conf
+
 # Copy Reflector Over
 print "Copy Reflector Configuration"
 cp /etc/xdg/reflector/reflector.conf /mnt/etc/xdg/reflector/reflector.conf
@@ -198,12 +250,11 @@ print "Generate /etc/fstab and remove ZFS entries"
 genfstab -U /mnt | grep -v "zroot" | tr -s '\n' | sed 's/\/mnt//'  > /mnt/etc/fstab
 
 # Set Hostname and configure /etc/hosts
-read -r -p 'Please enter hostname: ' hostname
-echo "$hostname" > /mnt/etc/hostname
+echo "$HOSTNAME" > /mnt/etc/hostname
 cat > /mnt/etc/hosts <<EOF
 #<ip-address> <hostname.domaing.org>  <hostname>
-127.0.0.1 localhost $hostname
-::1       localhost $hostname
+127.0.0.1 localhost $HOSTNAME
+::1       localhost $HOSTNAME
 EOF
 
 # Set and Prepare Locales
@@ -215,19 +266,14 @@ print "mkinitcpio UKI configuration"
 sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/keys/secret.jwe)" >> /mnt/etc/mkinitcpio.conf
-if [[ -n $SWAPPART ]]
-then
-    ask "Do you want Resume Support (SWAP > MEMORY)?"
-    if [[ $REPLY =~ ^[Yy]$ ]]
-        then
-            SWAPRESUME=1
-            echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis encrypt resume clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
-        else
-            echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis encrypt clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
-    fi
+if [[ -n "$SWAPRESUME" ]]; then
+    echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis encrypt resume clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+    CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap:allow-discards resume=$SWAP nowatchdog"
 else
     echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+    CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog"
 fi
+echo "$CMDLINE" > /mnt/etc/kernel/cmdline
 
 cat > /mnt/etc/mkinitcpio.d/linux-lts.preset <<"EOF"
 # mkinitcpio preset file for the 'linux-lts' package
@@ -269,9 +315,6 @@ fallback_uki="/efi/EFI/Linux/archlinux-linux-fallback.efi"
 fallback_options="-S autodetect --splash /usr/share/systemd/bootctl/splash-arch.bmp"
 EOF
 
-CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog"
-echo "$CMDLINE" > /mnt/etc/kernel/cmdline
-
 # Copy ZFS files
 print "Copy ZFS files"
 cp /etc/hostid /mnt/etc/hostid
@@ -296,29 +339,30 @@ curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
 
 if [[ -n $SWAPPART ]]; then
-     pacstrap /mnt       \
-            luksmeta            \
-            libpwquality        \
-            tpm2-abrmd
-    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
-    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
-    cp /tmp/swap.key /mnt/keys/swap.key
-    arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" -k /keys/swap.key tpm2 '{}'
+      print "TPM2 unlock of LUKs SWAP Partition"
+      cp /tmp/swap.key /mnt/keys/swap.key
+      arch-chroot /mnt /bin/bash -xe << EOF
+      pacman -Syu --noconfirm \
+                  luksmeta    \
+                  libpwquality\
+                  tpm2-abrmd
+      systemctl enable clevis-luks-askpass.path
+      clevis-luks-bind -d "$SWAPPART" -k /keys/swap.key tpm2 '{}'
+EOF
     shred /mnt/keys/swap.key
     rm /mnt/keys/swap.key
-    if [[ -n $SWAPRESUME ]]; then
-        CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap:allow-discards resume=$SWAP nowatchdog"
-        echo "$CMDLINE" > /mnt/etc/kernel/cmdline
-    else
-        CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap:allow-discards nowatchdog"
-        echo "$CMDLINE" > /mnt/etc/kernel/cmdline
-    fi
+    cat >> /mnt/etc/crypttab << "EOF"
+    swap UUID=$(blkid "$SWAPPART" | awk '{ print $2 }' | cut -d\" -f 2) none discard
+EOF
+    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
+    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
 fi
 
 print "make AUR builder"
 arch-chroot /mnt /bin/bash -xe << EOF
 useradd -m builder
 echo "builder ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/builder
+sed -i 's/#MAKEFLAGS=\"-j2\"/MAKEFLAGS=\"-j$(nproc)\"/' /mnt/etc/makepkg.conf
 EOF
 
 print "Build Plymouth and configure"
@@ -364,10 +408,6 @@ systemctl enable    \
 EOF
 
 print "Install ZFSBootMenu"
-ask "Do you want SSH Access to ZFSBootMenu"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    ZFSREMOTE=1
-  fi
 if [[ -n "$ZFSREMOTE" ]]; then
   arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
   paru -S mkinitcpio-netconf mkinitcpio-utils dropbear zfsbootmenu --noconfirm
@@ -439,13 +479,49 @@ mv /mnt/90-mkinitcpio-install.hook /mnt/usr/share/libalpm/hooks/90-mkinitcpio-in
 arch-chroot /mnt /bin/mkinitcpio -P
 arch-chroot /mnt /bin/generate-zbm
 arch-chroot /mnt /bin/generate-zbm
-cat > /mnt/efi/loader/entries/zbm.conf <<"EOF"
+cat > /mnt/efi/loader/entries/zfsbootmenu.conf <<"EOF"
 title ZFSBootMenu
 efi   /EFI/zbm/zfsbootmenu.EFI
 EOF
-cat > /mnt/efi/loader/entries/zbm-backup.conf <<"EOF"
+cat > /mnt/efi/loader/entries/zfsbootmenu-backup.conf <<"EOF"
 title ZFSBootMenu (Backup)
 efi   /EFI/zbm/zfsbootmenu-backup.EFI
+EOF
+if [[ -n "$CHANGEDEFAULT" ]]; then
+    ls /mnt/efi/EFI/Linux/ >> /tmp/listboot
+    ls /mnt/efi/loader/entries/ >> /tmp/listboot
+    select ENTRY in $(cat /tmp/listboot);
+    do
+      echo "Setting $ENTRY as Default"
+      ENTRY=$(echo "$ENTRY" | cut -d '.' -f1)
+      cat > /mnt/efi/loader/loader.conf <<"EOF"
+default "$ENTRY"
+#timeout 3
+console-mode max
+editor no
+EOF
+      break
+    done
+  else
+      cat > /mnt/efi/loader/loader.conf <<"EOF"
+default archlinux-linux
+#timeout 3
+console-mode max
+editor no
+EOF
+  fi
+
+mkdir -p /mnt/pacman.d/hooks
+cat > /mnt/pacman.d/hooks/95-systemd-boot.hook << "EOF"
+[Trigger]
+Type = Package
+Operation = Upgrade
+Target = systemd
+
+[Action]
+Description = Gracefully upgrading systemd-boot...
+When = PostTransaction
+Exec = /usr/bin/systemctl restart systemd-boot-update.service
 EOF
 
 print "Cleanup AUR Builder"
@@ -459,71 +535,57 @@ EOF
 print "Set Root Account Password"
 arch-chroot /mnt /bin/passwd
 
-ask "Would you like to sign EFI executables and enroll keys for Secureboot Support?"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
+if [[ -n $SECUREBOOT ]]; then
     print "Must have Secureboot in Setup Mode"
-    pacstrap /mnt sbctl
     arch-chroot /mnt /bin/bash -xe << EOF
+    pacman -Syu sbctl --noconfirm
     sbctl status
 EOF
     ask "Is Secureboot in Setup Mode?"
-      if [[ $REPLY =~ ^[Yy]$ ]]
-      then
-        print "Generate and Enroll-Keys with microsoft vendor keys"
-        arch-chroot /mnt /bin/bash -xe << EOF
-        sbctl create-keys
-        sbctl enroll-keys --microsoft
-        sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
-        sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
-        sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
-        sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
-        sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
-        sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
-        sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
-        sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+      ask "Do you wish to enroll Microsoft Keys as well for Option-ROM?"
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+          print "Generatng and Enrolling Keys with Microsoft Keys"
+          arch-chroot /mnt /bin/bash -xe << EOF
+          sbctl create-keys
+          sbctl enroll-keys --microsoft
+          sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
+          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
+          sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
+          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
+          sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
+          sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
+          sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
+          sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+          systemctl enable systemd-boot-update.service
+          sbctl status
 EOF
-      secureboot=1
-      else
-        print "Configure Secureboot Support on a later boot"
+          SECUREBOOTENABLED=1
+        else
+          print "Configure Secureboot Support on a later boot"
+        fi
       fi
-    fi
-if [[ -n "$secureboot" ]]; then
-    arch-chroot /mnt /bin/bash -xe << EOF
-    sbctl status
-EOF
-  ask "Do you wish to bind tpm2 unlocks to tpm2 measurements? (Secureboot must be Enabled)"
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-      cp /etc/zfs/zroot.key /mnt/keys/zroot.key
-      if [[ -f /tmp/swap.key ]]; then
-        cp /tmp/swap.key /mnt/keys/swap.key
-        arch-chroot /mnt /bin/clevis-luks-unbind -d "$SWAPPART" -s 1 -f
-        arch-chroot /mnt /bin/clevis-luks-bind -d "$SWAPPART" -k /keys/swap.key tpm2 '{"pcr_bank":"sha256","pcr_ids":"1,7"}'
-        shred /mnt/keys/swap.key
-        rm /mnt/keys/swap.key
-      fi
-        arch-chroot /mnt /bin/clevis-encrypt-tpm2 '{"pcr_bank":"sha256","pcr_ids":"1,7"}' < /keys/zroot.key > /keys/secret.jwe
-        shred /mnt/keys/zroot.key
-        rm /mnt/keys/zroot.key
-    fi
-fi
-
-
-print "Make Install Snapshot"
-zfs snapshot zroot/ROOT/default@install
-
-ask "Do you want to chroot?"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    arch-chroot /mnt /bin/bash
   fi
 
-ask "Do you want to unmount all partitions and export zpool?"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    print "Umount all partitions"
-    umount /mnt/efi
-    zfs umount -a
-    umount -R /mnt
-    print "Export zpool"
-    zpool export zroot
+if [[ -n "$SECUREBOOTENABLED" && -n "$SWAPPART" ]]; then
+  print "Bind LUKs Key and ZFS passphrase to Secureboot state on a later boot."
+elif [[ -n "$SECUREBOOTENABLED" ]]; then
+  print "Bind ZFS passphrase to Secureboot state on a later boot."
+fi
+
+print "Make Install Snapshot and Bootable Point\nThese are accessible from ZFSBootMenu"
+zfs snapshot zroot/ROOT/arch@install
+zfs clone zroot/ROOT/arch@install zroot/ROOT/arch_installpoint
+
+if [[ -n "$UMOUNT" ]]; then
+  umountandexport
+  else
+    ask "Do you want to unmount all partitions and export zpool?"
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        umountandexport
+      else
+        print "Be sure to unmount all partitions and export zpool before rebooting"
+      fi
   fi
 
 echo -e "\e[32mAll OK"
