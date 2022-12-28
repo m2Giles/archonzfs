@@ -16,7 +16,7 @@ passask () {
       echo "> Verify $1"
       read -r -s PASS2
       echo
-      [ "$PASS1" = "$PASS2" ] && break || echo "Oops, please try again"
+      [ "$PASS1" = "$PASS2" ] && break || echo "Oops, Passwords do not Match. Please try again."
     done
     echo "$PASS2" > "$2"
     chmod 000 "$2"
@@ -130,7 +130,7 @@ passask "ZFS Passphrase" "/etc/zfs/zroot.key"
 
 ask "Please enter hostname for Installation:" HOSTNAME
 
-ask "Do you want SSH Access to ZFSBootMenu during Installation"
+ask "Do you want to have SSH Access (Remote) to ZFSBootMenu"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     ZFSREMOTE=1
   fi
@@ -145,7 +145,7 @@ ask "Would you like to sign EFI executables and enroll keys for Secureboot Suppo
     SECUREBOOT=1
   fi
 
-ask "Do you want to unmount all partitions and export zpool after Installation?"
+ask "Do you want to unmount all partitions and export zpool following Installation?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     UMOUNT=1
   fi
@@ -360,8 +360,8 @@ if [[ -n $SWAPPART ]]; then
 EOF
     shred /mnt/keys/swap.key
     rm /mnt/keys/swap.key
-    cat >> /mnt/etc/crypttab << "EOF"
-    swap UUID=$(blkid "$SWAPPART" | awk '{ print $2 }' | cut -d\" -f 2) none discard
+    echo "swap UUID=$(blkid "$SWAPPART" | awk '{ print $2 }' | cut -d\" -f 2) none discard" >> /mnt/etc/crypttab
+
 EOF
     curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
     curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
@@ -371,7 +371,7 @@ print "make AUR builder"
 arch-chroot /mnt /bin/bash -xe << EOF
 useradd -m builder
 echo "builder ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/builder
-sed -i 's/#MAKEFLAGS=\"-j2\"/MAKEFLAGS=\"-j$(nproc)\"/' /mnt/etc/makepkg.conf
+sed -i 's/#MAKEFLAGS=\"-j2\"/MAKEFLAGS=\"-j\$(nproc)\"/' /etc/makepkg.conf
 EOF
 
 print "Build Plymouth and configure"
@@ -505,10 +505,10 @@ if [[ -n "$CHANGEDEFAULT" ]]; then
     ls /mnt/efi/loader/entries/ >> /tmp/listboot
     select ENTRY in $(cat /tmp/listboot);
     do
-      echo "Setting $ENTRY as Default"
       ENTRY=$(echo "$ENTRY" | cut -d '.' -f1)
-      cat > /mnt/efi/loader/loader.conf <<"EOF"
-default "$ENTRY"
+      echo "Setting $ENTRY as Default Boot Option"
+      cat > /mnt/efi/loader/loader.conf <<EOF
+default $ENTRY
 #timeout 3
 console-mode max
 editor no
