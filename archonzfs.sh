@@ -7,9 +7,22 @@ ask () {
     echo
 }
 
-secureask () {
-    read -p -s "> $1 "
-    echo
+passask () {
+    while true; do
+      echo
+      echo "> $1"
+      read -r -s PASS1
+      echo
+      echo "> Verify $1"
+      read -r -s PASS2
+      echo
+      [ "$PASS1" = "$PASS2" ] && break || echo "Oops, please try again"
+    done
+    echo "$PASS2" > "$2"
+    chmod 000 "$2"
+    print "$1 can be reviewed at $2 prior to reboot"
+    unset PASS1
+    unset PASS2
 }
 
 umountandexport () {
@@ -46,26 +59,36 @@ ask "Do you want to repartition $DISK?"
     # EFI Partition
     sgdisk -Zo "$DISK"
     while true; do
-      ask "Size of EFI Partition in MiB. Minimum is 512:"
-      (( "$REPLY" >= 512 )) && break || echo "Oops. Too small, minimum is 512"
+      ask "Size of EFI Partition in [MiB]. Minimum is 512 MiB:"
+      if (( "$REPLY" >= 512 )); then break; else print "Oops. Too small, $REPLY is less than minimum is 512 [MiB]"; fi
     done
     sgdisk -n1:1M:+"$REPLY"M -t1:EF00 "$DISK"
     EFI="$DISK-part1"
 
-    ask "Do you want a SWAP Partition?"
+    ask "Do you want a Swap Partition?"
         if [[ $REPLY =~ ^[Yy]$ ]]
         then
           ask "Do you want Resume Support (Requires SWAP > MEMORY)?"
             if [[ $REPLY =~ ^[Yy]$ ]]; then
               SWAPRESUME=1
               SWAPMIN=$(free -h | sed -n '2p' | awk '{ print $2 }')
-              SWAPMIN=${SWAPMIN::-2}
+              SWAPMIN=$(( ${SWAPMIN::-2} + 2 ))
               while true; do
-                ask "Size of SWAP Partition in [GiB]? Minimum is $SWAPMIN"
-                (( "$REPLY" >= "$SWAPMIN" )) && break || echo "Oops. Too small, minimum is $SWAPMIN for Resume Support"
+                ask "Size of Swap Partition in [GiB]? Minimum is $SWAPMIN GiB"
+                if (( "$REPLY" >= "$SWAPMIN" )); then break;
+                else
+                  print "Oops. Too small, $REPLY GiB is less than minimum $SWAPMIN GiB for Resume Support"
+                  ask "Do you wish to still have Resume Support?"
+                  if [[ $CHECK =~ ^[Yy]$ ]]; then
+                    continue
+                  else
+                    unset SWAPRESUME
+                    break
+                  fi
+                fi
               done
             else
-              ask "Size of SWAP Partition in [G]"
+              ask "Size of Swap Partition in [GiB]"
             fi
             sgdisk -n2:0:+"$REPLY"G -t2:8200 "$DISK"
             SWAPPART="$DISK-part2"
@@ -85,25 +108,14 @@ ask "Do you want to repartition $DISK?"
   else
     if [[ -z "$EFI" || -z "$ZFS" ]]; then
       print "Export Partitions for EFI and ZFS installation locations and rerun script"
+      print "Optionally export locations for Swap Partition and Swap DM name and Swap Resume for Swap Support"
     fi
   fi
 
 if [[ -n $SWAPPART ]]; then
-    print "Create Encrypted SWAP"
+    print "Create Encrypted Swap"
     SWAP=/dev/mapper/swap
-    while true; do
-      echo
-      secureask "SWAP LUKs passphrase: " PASS1
-      echo
-      secureask "Verify SWAP LUKs passphrase: " PASS1
-      echo
-      [ "$PASS1" = "$PASS2" ] && break || echo "Oops, please try again"
-    done
-    echo "$PASS2" > /tmp/swap.key
-    chmod 000 /tmp/swap.key
-    print "SWAP LUKs Passphrase can be reviewed at /tmp/swap.key prior to reboot"
-    unset PASS1
-    unset PASS2
+    passask "Swap LUKs Passphrase" "/tmp/swap.key"
     cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
     cryptsetup open --key-file=/tmp/swap.key "$SWAPPART" swap
     mkswap $SWAP
@@ -112,41 +124,36 @@ fi
 
 # Set ZFS passphrase
 print "Set ZFS passphrase for Encrypted Datasets"
-while true; do
-      echo
-      secureask "ZFS passphrase: " PASS1
-      echo
-      secureask "Verify ZFS passphrase: " PASS2
-      echo
-  [ "$PASS1" = "$PASS2" ] && break || echo "Oops, please try again"
-done
-echo "$PASS2" > /etc/zfs/zroot.key
-chmod 000 /etc/zfs/zroot.key
-print "ZFS PASSphrase can be reviewed at /etc/zfs/zroot.key prior to reboot"
-unset PASS1
-unset PASS2
+passask "ZFS Passphrase" "/etc/zfs/zroot.key"
 
-ask "Please enter hostname:" HOSTNAME
+ask "Please enter hostname for Installation:" HOSTNAME
 
-ask "Do you want SSH Access to ZFSBootMenu"
+ask "Do you want SSH Access to ZFSBootMenu during Installation"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     ZFSREMOTE=1
   fi
 
-print "Default Boot Choice is archlinux-linux.efi UKI\nKCL Editor is disabled, use ZFSBootMenu to edit KCL\n"
-ask "Do you wish to change the Default Boot Choice?"
+print "Default Boot Choice is archlinux-linux.efi UKI\nKernel Command Line Editor is disabled, use ZFSBootMenu to edit KCL"
+ask "Do you wish to change the Default Boot Choice during Installation?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     CHANGEDEFAULT=1
   fi
-ask "Would you like to sign EFI executables and enroll keys for Secureboot Support?"
+ask "Would you like to sign EFI executables and enroll keys for Secureboot Support during Installation?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     SECUREBOOT=1
   fi
 
-ask "Do you want to unmount all partitions and export zpool?"
+ask "Do you want to unmount all partitions and export zpool after Installation?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     UMOUNT=1
   fi
+
+if [[ -n $UMOUNT ]]; then
+  ask "Do you wish to reboot automatically following Installation?"
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      AUTOREBOOT=1
+    fi
+fi
 
 # Create ZFS pool
 print "Create ZFS Pool"
@@ -339,7 +346,7 @@ curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/
 curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
 
 if [[ -n $SWAPPART ]]; then
-      print "TPM2 unlock of LUKs SWAP Partition"
+      print "TPM2 unlock of LUKs Swap Partition"
       cp /tmp/swap.key /mnt/keys/swap.key
       arch-chroot /mnt /bin/bash -xe << EOF
       pacman -Syu --noconfirm \
@@ -439,6 +446,7 @@ EOF
   cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
   Global:
     ManageImages: true
+    BootMountPoint: /efi
     InitCPIO: true
     InitCPIOConfig: /etc/zfsbootmenu/mkinitcpio.conf
     InitCPIOHookDirs:
@@ -450,6 +458,7 @@ EOF
     Enabled: true
   Kernel:
     CommandLine: ro quiet loglevel=0 ip=dhcp zbm.show
+    Path: /boot/vmlinuz-linux-lts
     Prefix: zfsbootmenu
 EOF
   print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
@@ -457,6 +466,7 @@ else
   cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
   Global:
     ManageImages: true
+    BootMountPoint: /efi
     InitCPIO: true
     InitCPIOConfig: /etc/zfsbootmenu/mkinitcpio.conf
     InitCPIOHookDirs:
@@ -468,6 +478,7 @@ else
     Enabled: true
   Kernel:
     CommandLine: ro quiet loglevel=0 zbm.show
+    Path: /boot/vmlinuz-linux-lts
     Prefix: zfsbootmenu
 EOF
 fi
@@ -589,3 +600,16 @@ if [[ -n "$UMOUNT" ]]; then
   fi
 
 echo -e "\e[32mAll OK"
+
+if [[ -n "$AUTOREBOOT" ]]; then
+  count=5
+  print "System will reboot automatically in $count Seconds. Cancel with CTRL+C"
+  (( ++count ))
+  while (( --count > 0 )); do
+    echo "Reboot in $count Seconds"
+    sleep 1
+  done
+  echo "Rebooting System"
+  sleep 1
+  reboot
+fi
