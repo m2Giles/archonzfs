@@ -128,7 +128,8 @@ fi
 print "Set ZFS passphrase for Encrypted Datasets"
 passask "ZFS Passphrase" "/etc/zfs/zroot.key"
 
-ask "Please enter hostname for Installation:" HOSTNAME
+ask "Please enter hostname for Installation:"
+HOSTNAME="$REPLY"
 
 ask "Do you want to have SSH Access (Remote) to ZFSBootMenu"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
