@@ -221,6 +221,11 @@ print "Sorting Fastest Mirrors in US"
 echo "--country US" >> /etc/xdg/reflector/reflector.conf
 systemctl start reflector
 
+print "Configure Pacman for Color and Parallel Downloads"
+sed -i 's/#\(Color\)/\1/' /etc/pacman.conf
+sed -i "/Color/a\\ILoveCandy" /etc/pacman.conf
+sed -i 's/#\(Parallel\)/\1/' /etc/pacman.conf
+
 # Install
 print "Pacstrap"
 pacstrap /mnt           \
@@ -361,8 +366,6 @@ EOF
     shred /mnt/keys/swap.key
     rm /mnt/keys/swap.key
     echo "swap UUID=$(blkid "$SWAPPART" | awk '{ print $2 }' | cut -d\" -f 2) none discard" >> /mnt/etc/crypttab
-
-EOF
     curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
     curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
 fi
