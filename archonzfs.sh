@@ -398,7 +398,7 @@ shred /keys/zroot.key
 rm /keys/zroot.key
 pacman-key -r DDF7DB817396A49B2A2723F7403BD972F75D9D76
 pacman-key --lsign-key DDF7DB817396A49B2A2723F7403BD972F75D9D76
-pacman -Syu --noconfirm zfs-dkms zfs-utils
+pacman -Syu --noconfirm zfs-dkms zfs-utils rebuild-detector mlocate
 ln -sf /usr/share/zoneinfo/US/Eastern /etc/localtime
 hwclock --systohc
 locale-gen
@@ -508,7 +508,6 @@ if [[ -n "$CHANGEDEFAULT" ]]; then
     ls /mnt/efi/loader/entries/ >> /tmp/listboot
     select ENTRY in $(cat /tmp/listboot);
     do
-      ENTRY=$(echo "$ENTRY" | cut -d '.' -f1)
       echo "Setting $ENTRY as Default Boot Option"
       cat > /mnt/efi/loader/loader.conf <<EOF
 default $ENTRY
@@ -519,8 +518,9 @@ EOF
       break
     done
   else
+      echo "Setting archlinux-linux.efi as Default Boot Option"
       cat > /mnt/efi/loader/loader.conf <<"EOF"
-default archlinux-linux
+default archlinux-linux.efi
 #timeout 3
 console-mode max
 editor no
