@@ -80,15 +80,16 @@ ask "Do you want to repartition $DISK?"
                   print "Oops. Too small, $REPLY GiB is less than minimum $SWAPMIN GiB for Resume Support"
                   ask "Do you wish to still have Resume Support?"
                   if [[ $CHECK =~ ^[Yy]$ ]]; then
-                    continue
+                    SWAPRESUME=1
                   else
                     unset SWAPRESUME
+                    ask "Size of Swap Partition in [GiB]?"
                     break
                   fi
                 fi
               done
             else
-              ask "Size of Swap Partition in [GiB]"
+              ask "Size of Swap Partition in [GiB]?"
             fi
             sgdisk -n2:0:+"$REPLY"G -t2:8200 "$DISK"
             SWAPPART="$DISK-part2"
@@ -109,6 +110,7 @@ ask "Do you want to repartition $DISK?"
     if [[ -z "$EFI" || -z "$ZFS" ]]; then
       print "Export Partitions for EFI and ZFS installation locations and rerun script"
       print "Optionally export locations for Swap Partition and Swap DM name and Swap Resume for Swap Support"
+      exit
     fi
   fi
 
