@@ -244,7 +244,8 @@ pacstrap /mnt           \
       clevis            \
       tpm2-tools        \
       openssh           \
-      bash-completion
+      bash-completion   \
+      systemd-resolvconf
 
 # Mask mkinitcpio Hook to Speed up installs
 print "Move mkinitcpio pacman Hooks to speed up installs"
@@ -591,7 +592,8 @@ fi
 
 print "Make Install Snapshot and Bootable Point\nThese are accessible from ZFSBootMenu"
 zfs snapshot zroot/ROOT/arch@install
-zfs clone zroot/ROOT/arch@install zroot/ROOT/arch_installpoint
+zfs clone -o mountpoint=/ -o canmount=noauto \
+  zroot/ROOT/arch@install zroot/ROOT/arch_installpoint
 
 if [[ -n "$UMOUNT" ]]; then
   umountandexport
