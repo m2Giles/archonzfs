@@ -517,7 +517,7 @@ EOF
     echo "swap PARTLABEL=SWAP none discard" >> /mnt/etc/crypttab
     echo "/dev/mapper/swap  none   swap    defaults   0       0" >> /mnt/etc/fstab
 elif [[ -n $SWAPPART ]]; then
-  echo "swap PARTLABEL=SWAP /dev/urandom swap,cipher=aes-cbc-essiv:sha256,size=256"
+  echo "swap PARTLABEL=SWAP /dev/urandom swap,cipher=aes-cbc-essiv:sha256,size=256" >> /mnt/etc/crypttab
   echo "/dev/mapper/swap  none   swap    defaults   0       0" >> /mnt/etc/fstab
 fi
 
