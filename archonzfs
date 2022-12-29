@@ -94,6 +94,7 @@ tmpdir=/tmp/archonzfs
 mkdir -p /tmp/archonzfs/mkinitcpio/{hooks,install}
 urlforcurl=https://raw.githubusercontent.com/m2Giles/archonzfs/master
 curl --url "$urlforcurl/disksetup" -o "$tmpdir"/disksetup
+chmod +x "$tmpdir"/disksetup
 curl --url "$urlforcurl/mkinitcpio/hooks/clevis" -o "$tmpdir"/mkinitcpio/hooks/clevis
 curl --url "$urlforcurl/mkinitcpio/hooks/clevis-secret" -o "$tmpdir"/mkinitcpio/hooks/clevis-secret
 curl --url "$urlforcurl/mkinitcpio/hooks/dropbear" -o "$tmpdir"/mkinitcpio/hooks/dropbear
