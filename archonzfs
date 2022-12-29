@@ -7,8 +7,7 @@ set -e
 #   $EFI Partition for target EFI system Partition.
 #   $ZFS Partition for target zfs install location.
 #   $LINUXARRAY for array of Linux Kernels to Install.
-#   $ZFSREMOTE for SSH access to ZFSBootMenu.
-#   $HOSTNAME for hostname of install.
+#   $HOSTNAMEINSTALL for hostname of install.
 #   $CHANGEDEFAULT Boot Option 0 to skip 1 requires manual intervention
 #   $SECUREBOOT 0 to skip. 1 Requires manual intervention.
 #   $UMOUNT to umount and export after installation.
@@ -20,6 +19,8 @@ set -e
 #   $SWAPPART Partition for target Swap Partition (Require PARTLABEL=SWAP)
 #   $SWAPRESUME for Hibernation Resume (Requires Swap > Memory)
 #   $SWAPKEY for Hibernation Resume Key
+#   $SSHKEY -- Public Key for Remote Login to ZFSBootMenu
+# Keys are Files with the passphrase/password inside them.
 # Secureboot/Change Default Boot Option requires manual confirmation if set to 1. Set to 0 to skip.
 #
 if [[ -f $1 ]]; then
@@ -240,9 +241,9 @@ passask "Root Password" "/tmp/root.key"
 awk '{ print "root:" $0 }' /tmp/root.key > "$ROOTKEY"
 fi
 
-if [[ -z "$HOSTNAME" ]]; then
+if [[ -z "$HOSTNAMEINSTALL" ]]; then
 ask "Please enter hostname for Installation:"
-HOSTNAME="$REPLY"
+HOSTNAMEINSTALL="$REPLY"
 fi
 
 if [[ -z "${LINUXARRAY[*]}" ]]; then
@@ -260,10 +261,17 @@ kernelselect
 fi
 LINUXARRAYHEADERS=( "${LINUXARRAY[@]/%/-headers}" )
 
-if [[ -z "$ZFSREMOTE" ]]; then
+if [[ ! -f "$SSHKEY" || -z "$ZFSREMOTE" ]]; then
 ask "Do you want to have SSH Access (Remote) to ZFSBootMenu"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     ZFSREMOTE=1
+    if [[ ! -f "$SSHKEY" ]]; then
+    ask "Do you have an SSH Public Key you wish to upload now?"
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        ask "What is the path to the SSH Public Key"
+        SSHKEY=$REPLY
+      fi
+    fi
   fi
 fi
 
@@ -385,8 +393,8 @@ sed -i 's/#\(Parallel\)/\1/' /etc/pacman.conf
 
 # Install
 print "Pacstrap"
-pacstrap /mnt "${LINUXARRAY[*]}" \
-      "${LINUXARRAYHEADERS[*]}" \
+pacstrap /mnt "${LINUXARRAY[@]}" \
+      "${LINUXARRAYHEADERS[@]}" \
       base              \
       base-devel        \
       linux-firmware    \
@@ -419,11 +427,11 @@ print "Generate /etc/fstab and remove ZFS entries"
 genfstab -U /mnt | grep -v "zroot" | tr -s '\n' | sed 's/\/mnt//'  > /mnt/etc/fstab
 
 # Set Hostname and configure /etc/hosts
-echo "$HOSTNAME" > /mnt/etc/hostname
+echo "$HOSTNAMEINSTALL" > /mnt/etc/hostname
 cat > /mnt/etc/hosts <<EOF
 #<ip-address> <hostname.domaing.org>  <hostname>
-127.0.0.1 localhost $HOSTNAME
-::1       localhost $HOSTNAME
+127.0.0.1 localhost $HOSTNAMEINSTALL
+::1       localhost $HOSTNAMEINSTALL
 EOF
 
 # Set and Prepare Locales
@@ -488,7 +496,8 @@ mkdir /mnt/keys
 cp "$ZFSKEY" /mnt/keys/zroot.key
 print "Getting Clevis-Secret Hook"
 mkdir -p /mnt/etc/initcpio/{hooks,install}
-cp "$tmpdir"/mkinitcpio/{hooks,install}/clevis-secret /mnt/etc/initcpio/{hooks,install}/clevis-secret
+cp "$tmpdir"/mkinitcpio/hooks/clevis-secret /mnt/etc/initcpio/hooks/clevis-secret
+cp "$tmpdir"/mkinitcpio/install/clevis-secret /mnt/etc/initcpio/install/clevis-secret
 
 if [[ -n $SWAPRESUME ]]; then
       mkswap -q "$SWAP"
@@ -562,7 +571,7 @@ systemctl enable    \
 EOF
 
 print "Install ZFSBootMenu"
-if [[ -n "$ZFSREMOTE" ]]; then
+if [[ "$ZFSREMOTE" = 1 || -f "$SSHKEY" ]]; then
   arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
   paru -S mkinitcpio-netconf mkinitcpio-utils dropbear zfsbootmenu --noconfirm
 EOF"
@@ -575,18 +584,22 @@ fi
 zfs set org.zfsbootmenu:commandline="$CMDLINE" zroot/ROOT
 
 print "Configure ZFSBootMenu"
-if [[ -n "$ZFSREMOTE" ]]; then
-  print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
+if [[ "$ZFSREMOTE" = 1 || -f "$SSHKEY" ]]; then
   mkdir -p /mnt/etc/zfsbootmenu/initcpio/{hooks,install}
-  cp "$tmpdir"/mkinitcpio/{hooks,install}/dropbear /mnt/etc/zfsbootmenu/initcpio/{hooks,install}/dropbear
+  cp "$tmpdir"/mkinitcpio/hooks/dropbear /mnt/etc/zfsbootmenu/initcpio/hooks/dropbear
+  cp "$tmpdir"/mkinitcpio/install/dropbear /mnt/etc/zfsbootmenu/initcpio/install/dropbear
   mkdir -p /mnt/etc/dropbear
   arch-chroot /mnt /bin/bash -xe << "EOF"
   for keytype in rsa ecdsa ed25519; do
     dropbearkey -t "${keytype}" -f "/etc/dropbear/dropbear_${keytype}_host_key"
   done
-  touch /etc/dropbear/root_key
   echo "dropbear_listen=2222" > /etc/dropbear/dropbear.conf
 EOF
+  if [[ -f "$SSHKEY" ]]; then
+    cp "$SSHKEY" /mnt/etc/dropbear/root_key
+  else
+    touch /etc/dropbear/root_key
+  fi
   sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
   echo "HOOKS=(base udev autodetect modconf block filesystems keyboard netconf dropbear zfsbootmenu)" >> /mnt/etc/zfsbootmenu/mkinitcpio.conf
   cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
@@ -607,7 +620,9 @@ EOF
     Path: /boot/vmlinuz-linux-lts
     Prefix: zfsbootmenu
 EOF
-  print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
+  if [[ ! -f "$SSHKEY" ]]; then
+    print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
+  fi
 else
   cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
   Global:
