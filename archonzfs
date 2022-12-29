@@ -9,15 +9,18 @@ set -e
 #   $LINUXARRAY for array of Linux Kernels to Install.
 #   $ZFSREMOTE for SSH access to ZFSBootMenu.
 #   $HOSTNAME for hostname of install.
-#   $CHANGEDEFAULT if you wish to change default boot option.
+#   $CHANGEDEFAULT Boot Option 0 to skip 1 requires manual intervention
 #   $SECUREBOOT 0 to skip. 1 Requires manual intervention.
 #   $UMOUNT to umount and export after installation.
 #   $AUTOREBOOT to autoreboot following installation.
 # Make sure keys are Defined
 #  $ZFSKEY -- ZFS Encryption Key
-#  $SWAPKEY -- Swap Luks Key
 #  $ROOTKEY -- Root's Password
-# Secureboot requires manual confirmation if set to 1. Set to 0 to skip.
+# Optional Variables:
+#   $SWAPPART Partition for target Swap Partition (Require PARTLABEL=SWAP)
+#   $SWAPRESUME for Hibernation Resume (Requires Swap > Memory)
+#   $SWAPKEY for Hibernation Resume Key
+# Secureboot/Change Default Boot Option requires manual confirmation if set to 1. Set to 0 to skip.
 #
 if [[ -f $1 ]]; then
 set -a
@@ -87,10 +90,16 @@ print () {
 }
 
 # Get Scripts and Stuff into Place
+tmpdir=/tmp/archonzfs
 mkdir -p /tmp/archonzfs/mkinitcpio/{hooks,install}
 urlforcurl=https://raw.githubusercontent.com/m2Giles/archonzfs/master
-curl -s --url $urlforcurl/disksetup -o /tmp/archonzfs/disksetup \
-        --url $urlforcurl/mkinitcpio/{hooks,install}/{clevis,clevis-secret} -o /tmp/archonzfs/mkinitcpio/{hooks,install}/{clevis,clevis-secret}
+curl --url "$urlforcurl/disksetup" -o "$tmpdir"/disksetup
+curl --url "$urlforcurl/mkinitcpio/hooks/clevis" -o "$tmpdir"/mkinitcpio/hooks/clevis
+curl --url "$urlforcurl/mkinitcpio/hooks/clevis-secret" -o "$tmpdir"/mkinitcpio/hooks/clevis-secret
+curl --url "$urlforcurl/mkinitcpio/hooks/dropbear" -o "$tmpdir"/mkinitcpio/hooks/dropbear
+curl --url "$urlforcurl/mkinitcpio/install/clevis" -o "$tmpdir"/mkinitcpio/install/clevis
+curl --url "$urlforcurl/mkinitcpio/install/clevis-secret" -o "$tmpdir"/mkinitcpio/install/clevis-secret
+curl --url "$urlforcurl/mkinitcpio/install/dropbear" -o "$tmpdir"/mkinitcpio/install/dropbear
 
 # Get ZFS module on ISO
 print "Getting ZFS Module"
@@ -164,8 +173,6 @@ if [[ -n $SWAPRESUME ]]; then
     fi
     cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
     cryptsetup open --key-file="$SWAPKEY" "$SWAPPART" swap
-    mkswap -q $SWAP
-    swapon $SWAP
 fi
 
 # Set ZFS passphrase
@@ -430,9 +437,12 @@ print "TPM2 unlock of zfs root dataset"
 mkdir /mnt/keys
 cp /etc/zfs/zroot.key /mnt/keys/zroot.key
 print "Getting Clevis-Secret Hook"
-cp -r /tmp/archonzfs/mkinitcpio/* /mnt/etc/initcpio/
+mkdir -p /mnt/etc/initcpio/{hooks,install}
+cp "$tmpdir"/mkinitcpio/{hooks,install}/clevis-secret /mnt/etc/initcpio/{hooks,install}/clevis-secret
 
 if [[ -n $SWAPRESUME ]]; then
+      mkswap -q "$SWAP"
+      swapon "$SWAP"
       print "TPM2 unlock of LUKs Swap Partition"
       cp /tmp/swap.key /mnt/keys/swap.key
       arch-chroot /mnt /bin/bash -xe << EOF
@@ -446,8 +456,10 @@ EOF
     shred /mnt/keys/swap.key
     rm /mnt/keys/swap.key
     echo "swap PARTLABEL=SWAP none discard" >> /mnt/etc/crypttab
+    echo "/dev/mapper/swap  none   swap    defaults   0       0" >> /mnt/etc/fstab
 elif [[ -n $SWAPPART ]]; then
   echo "swap PARTLABEL=SWAP /dev/urandom swap,cipher=aes-cbc-essiv:sha256,size=256"
+  echo "/dev/mapper/swap  none   swap    defaults   0       0" >> /mnt/etc/fstab
 fi
 
 print "make AUR builder"
@@ -516,8 +528,7 @@ print "Configure ZFSBootMenu"
 if [[ -n "$ZFSREMOTE" ]]; then
   print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
   mkdir -p /mnt/etc/zfsbootmenu/initcpio/{hooks,install}
-  curl "https://raw.githubusercontent.com/ahesford/mkinitcpio-dropbear/master/dropbear_hook" -o /mnt/etc/zfsbootmenu/initcpio/hooks/dropbear
-  curl "https://raw.githubusercontent.com/ahesford/mkinitcpio-dropbear/master/dropbear_install" -o /mnt/etc/zfsbootmenu/initcpio/install/dropbear
+  cp "$tmpdir"/mkinitcpio/{hooks,install}/dropbear /mnt/etc/zfsbootmenu/initcpio/{hooks,install}/dropbear
   mkdir -p /mnt/etc/dropbear
   arch-chroot /mnt /bin/bash -xe << "EOF"
   for keytype in rsa ecdsa ed25519; do
@@ -583,7 +594,7 @@ cat > /mnt/efi/loader/entries/zfsbootmenu-backup.conf <<"EOF"
 title ZFSBootMenu (Backup)
 efi   /EFI/zbm/zfsbootmenu-backup.EFI
 EOF
-if [[ -n "$CHANGEDEFAULT" ]]; then
+if [[ "$CHANGEDEFAULT" = 1 ]]; then
     ls /mnt/efi/EFI/Linux/ >> /tmp/listboot
     ls /mnt/efi/loader/entries/ >> /tmp/listboot
     select ENTRY in $(cat /tmp/listboot);
