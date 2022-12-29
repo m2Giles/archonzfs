@@ -86,6 +86,12 @@ print () {
     echo -e "\n\033[1m> $1\033[0m\n"
 }
 
+# Get Scripts and Stuff into Place
+mkdir -p /tmp/archonzfs/mkinitcpio/{hooks,install}
+urlforcurl=https://raw.githubusercontent.com/m2Giles/archonzfs/master
+curl -s --url $urlforcurl/disksetup -o /tmp/archonzfs/disksetup \
+        --url $urlforcurl/mkinitcpio/{hooks,install}/{clevis,clevis-secret} -o /tmp/archonzfs/{hooks,install}/{clevis,clevis-secret}
+
 # Get ZFS module on ISO
 print "Getting ZFS Module"
 curl -s https://raw.githubusercontent.com/eoli3n/archiso-zfs/master/init | bash
@@ -103,97 +109,14 @@ done
 
 ask "Do you want to repartition $DISK?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "Partitioning Drive"
-    # EFI Partition
-    sgdisk -Zo "$DISK"
-    while true; do
-      ask "Size of EFI Partition in [MiB]. Minimum is 512 MiB:"
-      if (( "$REPLY" >= 512 )); then break; else print "Oops. Too small, $REPLY is less than minimum is 512 [MiB]"; fi
-    done
-    sgdisk -n1:1M:+"$REPLY"M -t1:EF00 "$DISK"
-    EFI="$DISK-part1"
-
-    ask "Do you want a Swap Partition?"
-        if [[ $REPLY =~ ^[Yy]$ ]]
-        then
-          ask "Do you want Resume Support (Requires SWAP > MEMORY)?"
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-              SWAPRESUME=1
-              SWAPMIN=$(free -h | sed -n '2p' | awk '{ print $2 }')
-              SWAPMIN=$(( ${SWAPMIN::-2} + 2 ))
-              while true; do
-                ask "Size of Swap Partition in [GiB]? Minimum is $SWAPMIN GiB"
-                if (( "$REPLY" >= "$SWAPMIN" )); then break;
-                else
-                  print "Oops. Too small, $REPLY GiB is less than minimum $SWAPMIN GiB for Resume Support"
-                  ask "Do you wish to still have Resume Support?"
-                  if [[ $CHECK =~ ^[Yy]$ ]]; then
-                    SWAPRESUME=1
-                  else
-                    unset SWAPRESUME
-                    ask "Size of Swap Partition in [GiB]?"
-                    break
-                  fi
-                fi
-              done
-            else
-              ask "Size of Swap Partition in [GiB]?"
-            fi
-            sgdisk -n2:0:+"$REPLY"G -t2:8200 "$DISK"
-            SWAPPART="$DISK-part2"
-        fi
-
-    # ZFS Partition
-    sgdisk -n3:0:0 -t3:BF00 "$DISK"
-    ZFS="$DISK-part3"
-
-    # notify Kernel
-    partprobe "$DISK"
-
-    # Format EFI Partition
-    sleep 1
-    echo "Formatting EFI Partition"
-    mkfs.vfat -F32 "$EFI"
-  else
-    if [[ -z "$EFI" ]]; then
-      print "Select EFI Partition"
-      select ENTRY in $(ls "$DISK"-part*);
-      do
-        print "Reusing $ENTRY as EFI partition"
-        echo "This does not change partition"
-        EFI=$ENTRY
-        break
-      done
-    fi
-    if [[ -z "$ZFS" ]]; then
-      print "Select ZFS Root Partition"
-      select ENTRY in $(ls "$DISK"-part*);
-      do
-        print "Reusing $ENTRY as ZFS Root partition"
-        echo "This does not change partition"
-        ZFS=$ENTRY
-        break
-      done
-    fi
-    if [[ -z $SWAPPART ]]; then
-      ask "Do you have a Swap Partition?"
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-          select ENTRY in $(ls "$DISK"-part*);
-          do
-            print "Reusing $ENTRY as Swap partition"
-            echo "This does not change partition settings"
-            SWAPPART=$ENTRY
-            break
-          done
-        fi
-    fi
+    curl -s https://raw.githubusercontent.com/m2Giles/archonzfs/master/disksetup | bash
   fi
 fi
 
 if [[ -n $SWAPPART ]]; then
     print "Create Encrypted Swap"
     SWAP=/dev/mapper/swap
-    if [[ -f /tmp/swap.key ]]; then
+    if [[ ! -f /tmp/swap.key ]]; then
     passask "Swap LUKs Passphrase" "/tmp/swap.key"
     fi
     cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
@@ -203,13 +126,13 @@ if [[ -n $SWAPPART ]]; then
 fi
 
 # Set ZFS passphrase
-if [[ -f /etc/zfs/zroot.key ]]; then
+if [[ ! -f /etc/zfs/zroot.key ]]; then
 print "Set ZFS passphrase for Encrypted Datasets"
 passask "ZFS Passphrase" "/etc/zfs/zroot.key"
 fi
 
 # Set Root Account Password
-if [[ -f /tmp/root-chpasswd.key ]]; then
+if [[ ! -f /tmp/root-chpasswd.key ]]; then
 print "Set Root Account Password for new Installtion"
 passask "Root Password" "/tmp/root.key"
 awk '{ print "root:" $0 }' /tmp/root.key > /tmp/root-chpasswd.key
