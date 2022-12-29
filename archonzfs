@@ -155,7 +155,7 @@ ask "Do you want to repartition $DISK?"
             ask "Size of Swap Partition in [GiB]?"
           fi
           sgdisk -n2:0:+"$REPLY"G -t2:8200 -c2:SWAP "$DISK"
-          export SWAPPART="$DISK-part2"
+          SWAPPART="$DISK-part2"
       fi
 
 # ZFS Partition
@@ -198,6 +198,7 @@ if [[ -z $SWAPPART ]]; then
       select ENTRY in $(ls "$DISK"-part*);
       do
         print "Reusing $ENTRY as Swap partition"
+        SWAPPART=$ENTRY
         echo "Not Checking PARTLABEL = SWAP."
         echo "This does not change partition settings"
         ask "Do you wish to Resume from this partition. Requires Swap > Memory."
