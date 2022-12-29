@@ -73,7 +73,6 @@ kernelselect () {
           sed -i "/$ENTRY/d" /tmp/listkernels
         fi
         (( --count ))
-        echo $count
         while (( count > 0 )); do
           ask "Are you done selecting kernels?"
           if [[ $REPLY =~ ^[Yy]$ ]]; then
