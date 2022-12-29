@@ -599,7 +599,7 @@ EOF
   if [[ -f "$SSHKEY" ]]; then
     cp "$SSHKEY" /mnt/etc/dropbear/root_key
   else
-    touch /etc/dropbear/root_key
+    touch /mnt/etc/dropbear/root_key
   fi
   sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
   echo "HOOKS=(base udev autodetect modconf block filesystems keyboard netconf dropbear zfsbootmenu)" >> /mnt/etc/zfsbootmenu/mkinitcpio.conf
