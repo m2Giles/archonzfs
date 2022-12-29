@@ -2,6 +2,29 @@
 
 set -e
 
+# Source a Configuration File if provided
+# Variables Needed for Automatic
+#   $EFI Partition for target EFI system Partition.
+#   $ZFS Partition for target zfs install location.
+#   $LINUXARRAY for array of Linux Kernels to Install.
+#   $ZFSREMOTE for SSH access to ZFSBootMenu.
+#   $HOSTNAME for hostname of install.
+#   $CHANGEDEFAULT if you wish to change default boot option.
+#   $SECUREBOOT 0 to skip. 1 Requires manual intervention.
+#   $UMOUNT to umount and export after installation.
+#   $AUTOREBOOT to autoreboot following installation.
+# Make sure keys are placed at appropiate locations.
+#  /etc/zfs/zroot.key -- ZFS Root Key
+#  /tmp/swap.key -- Swap Luks Key
+#  /tmp/root-chpasswd.key Root's Password
+# Secureboot requires manual confirmation if set to 1. Set to 0 to skip.
+#
+if [[ -f $1 ]]; then
+set -a
+. "$1"
+set +a
+fi
+
 ask () {
     read -p "> $1 " -r
     echo
@@ -16,7 +39,7 @@ passask () {
       echo "> Verify $1"
       read -r -s PASS2
       echo
-      [ "$PASS1" = "$PASS2" ] && break || echo "Oops, Passwords do not Match. Please try again."
+      [ "$PASS1" = "$PASS2" ] && break || echo "Passwords do not Match. Please try again."
     done
     echo "$PASS2" > "$2"
     chmod 000 "$2"
@@ -34,6 +57,31 @@ umountandexport () {
     zpool export zroot
 }
 
+kernelselect () {
+    select ENTRY in $(cat /tmp/listkernels);
+      do
+        echo "Adding $ENTRY kernel to installation"
+        LINUXARRAY+=( "$ENTRY" )
+        echo "Current Kernel's to be installed ${LINUXARRAY[*]}"
+        if [[ $ENTRY = linux ]]; then
+          sed -i "1d" /tmp/listkernels
+        else
+          sed -i "/$ENTRY/d" /tmp/listkernels
+        fi
+        (( --count ))
+        echo $count
+        while (( count > 0 )); do
+          ask "Are you done selecting kernels?"
+          if [[ $REPLY =~ ^[Yy]$ ]]; then
+            count=0
+            break
+          fi
+            kernelselect
+        done
+        break
+      done
+}
+
 print () {
     echo -e "\n\033[1m> $1\033[0m\n"
 }
@@ -43,6 +91,7 @@ print "Getting ZFS Module"
 curl -s https://raw.githubusercontent.com/eoli3n/archiso-zfs/master/init | bash
 
 # Partition Drive
+if [[ -z $EFI && -z $ZFS ]]; then
 print "Choose Drive"
 select ENTRY in $(ls /dev/disk/by-id);
 do
@@ -53,8 +102,7 @@ do
 done
 
 ask "Do you want to repartition $DISK?"
-  if [[ $REPLY =~ ^[Yy]$ ]]
-  then
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Partitioning Drive"
     # EFI Partition
     sgdisk -Zo "$DISK"
@@ -107,56 +155,144 @@ ask "Do you want to repartition $DISK?"
     echo "Formatting EFI Partition"
     mkfs.vfat -F32 "$EFI"
   else
-    if [[ -z "$EFI" || -z "$ZFS" ]]; then
-      print "Export Partitions for EFI and ZFS installation locations and rerun script"
-      print "Optionally export locations for Swap Partition and Swap DM name and Swap Resume for Swap Support"
-      exit
+    if [[ -z "$EFI" ]]; then
+      print "Select EFI Partition"
+      select ENTRY in $(ls "$DISK"-part*);
+      do
+        print "Reusing $ENTRY as EFI partition"
+        echo "This does not change partition"
+        EFI=$ENTRY
+        break
+      done
+    fi
+    if [[ -z "$ZFS" ]]; then
+      print "Select ZFS Root Partition"
+      select ENTRY in $(ls "$DISK"-part*);
+      do
+        print "Reusing $ENTRY as ZFS Root partition"
+        echo "This does not change partition"
+        ZFS=$ENTRY
+        break
+      done
+    fi
+    if [[ -z $SWAPPART ]]; then
+      ask "Do you have a Swap Partition?"
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+          select ENTRY in $(ls "$DISK"-part*);
+          do
+            print "Reusing $ENTRY as Swap partition"
+            echo "This does not change partition settings"
+            SWAPPART=$ENTRY
+            break
+          done
+        fi
     fi
   fi
+fi
 
 if [[ -n $SWAPPART ]]; then
     print "Create Encrypted Swap"
     SWAP=/dev/mapper/swap
+    if [[ -f /tmp/swap.key ]]; then
     passask "Swap LUKs Passphrase" "/tmp/swap.key"
+    fi
     cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
     cryptsetup open --key-file=/tmp/swap.key "$SWAPPART" swap
-    mkswap $SWAP
+    mkswap -q $SWAP
     swapon $SWAP
 fi
 
 # Set ZFS passphrase
+if [[ -f /etc/zfs/zroot.key ]]; then
 print "Set ZFS passphrase for Encrypted Datasets"
 passask "ZFS Passphrase" "/etc/zfs/zroot.key"
+fi
 
+# Set Root Account Password
+if [[ -f /tmp/root-chpasswd.key ]]; then
+print "Set Root Account Password for new Installtion"
+passask "Root Password" "/tmp/root.key"
+awk '{ print "root:" $0 }' /tmp/root.key > /tmp/root-chpasswd.key
+fi
+
+if [[ -z "$HOSTNAME" ]]; then
 ask "Please enter hostname for Installation:"
 HOSTNAME="$REPLY"
+fi
 
+if [[ -z "${LINUXARRAY[*]}" ]]; then
+LINUXARRAY=(linux-lts)
+ask "Do you wish to install additional kernel's? Default Kernel is Linux-lts."
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    ADDKERNEL=1
+    cat > /tmp/listkernels << EOF
+    linux
+    linux-zen
+    linux-hardened
+EOF
+count=$(wc -l < /tmp/listkernels)
+kernelselect
+  fi
+fi
+INSTALLARRAY=("${LINUXARRAY[@]:1}")
+
+if [[ -z "$ZFSREMOTE" ]]; then
 ask "Do you want to have SSH Access (Remote) to ZFSBootMenu"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     ZFSREMOTE=1
   fi
+fi
 
-print "Default Boot Choice is archlinux-linux.efi UKI\nKernel Command Line Editor is disabled, use ZFSBootMenu to edit KCL"
+if [[ -z "$CHANGEDEFAULT" ]]; then
+print "Default Boot Choice is archlinux-linux-lts.efi UKI\nKernel Command Line Editor is disabled, use ZFSBootMenu to edit KCL"
 ask "Do you wish to change the Default Boot Choice during Installation?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     CHANGEDEFAULT=1
   fi
+fi
+
+if [[ -z "$SECUREBOOT" ]]; then
 ask "Would you like to sign EFI executables and enroll keys for Secureboot Support during Installation?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     SECUREBOOT=1
   fi
+fi
 
+if [[ -z "$UMOUNT" ]]; then
 ask "Do you want to unmount all partitions and export zpool following Installation?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     UMOUNT=1
   fi
-
-if [[ -n $UMOUNT ]]; then
-  ask "Do you wish to reboot automatically following Installation?"
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-      AUTOREBOOT=1
-    fi
 fi
+
+if [[ -z "$AUTOREBOOT" ]]; then
+  if [[ -n $UMOUNT ]]; then
+    ask "Do you wish to reboot automatically following Installation?"
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        AUTOREBOOT=1
+      fi
+  fi
+fi
+
+if [[ -n "$AUTOREBOOT" && -z "$UMOUNT" ]]; then
+  print "Autoreboot set, but unmount and export not set."
+  ask "Do you wish to unset Autoreboot?"
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        unset AUTOREBOOT
+      else
+        ask "Do you want to unmount all partitions and export zpool following Installation?"
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+          UMOUNT=1
+        else
+          echo "Unsetting Autoreboot"
+          unset AUTOREBOOT
+        fi
+      fi
+fi
+
+#Generate zfs hostid
+print "Generate Hostid for ZFS"
+zgenhostid -f "$(hostid)"
 
 # Create ZFS pool
 print "Create ZFS Pool"
@@ -203,10 +339,6 @@ mkdir -p /mnt/efi
 mount "$EFI" /mnt/efi
 mkdir -p /mnt/efi/EFI/Linux
 
-#Generate zfs hostid
-print "Generate Hostid for ZFS"
-zgenhostid -f "$(hostid)"
-
 #Set Bootfs
 print "Set ZFS bootfs"
 zpool set bootfs=zroot/ROOT/arch zroot
@@ -232,8 +364,6 @@ print "Pacstrap"
 pacstrap /mnt           \
       base              \
       base-devel        \
-      linux             \
-      linux-headers     \
       linux-lts         \
       linux-lts-headers \
       linux-firmware    \
@@ -257,6 +387,13 @@ print "Configure Pacman for Color and Parallel Downloads"
 sed -i 's/#\(Color\)/\1/' /mnt/etc/pacman.conf
 sed -i "/Color/a\\ILoveCandy" /mnt/etc/pacman.conf
 sed -i 's/#\(Parallel\)/\1/' /mnt/etc/pacman.conf
+
+if [[ -n "$ADDKERNEL" ]]; then
+  for i in "${INSTALLARRAY[@]}"
+  do
+    pacstrap /mnt "$i" "$i-headers"
+  done
+fi
 
 # Copy Reflector Over
 print "Copy Reflector Configuration"
@@ -291,45 +428,28 @@ else
 fi
 echo "$CMDLINE" > /mnt/etc/kernel/cmdline
 
-cat > /mnt/etc/mkinitcpio.d/linux-lts.preset <<"EOF"
-# mkinitcpio preset file for the 'linux-lts' package
+for i in "${LINUXARRAY[@]}"
+do
+cat > /mnt/etc/mkinitcpio.d/"$i".preset <<EOF
+# mkinitcpio preset file for the \'$i\' package
 
 ALL_config="/etc/mkinitcpio.conf"
-ALL_kver="/boot/vmlinuz-linux-lts"
+ALL_kver="/boot/vmlinuz-$i"
 ALL_microcode="/boot/intel-ucode.img"
 
 PRESETS=('default' 'fallback')
 
 #default_config="/etc/mkinitcpio.conf"
-default_image="/boot/initramfs-linux-lts.img"
-default_uki="/efi/EFI/Linux/archlinux-linux-lts.efi"
+default_image="/boot/initramfs-$i.img"
+default_uki="/efi/EFI/Linux/archlinux-$i.efi"
 default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp"
 
 #fallback_config="/etc/mkinitcpio.conf"
-fallback_image="/boot/initramfs-linux-lts-fallback.img"
-fallback_uki="/efi/EFI/Linux/archlinux-linux-lts-fallback.efi"
+fallback_image="/boot/initramfs-linux-$i.img"
+fallback_uki="/efi/EFI/Linux/archlinux-$i-fallback.efi"
 fallback_options="-S autodetect --splash /usr/share/systemd/bootctl/splash-arch.bmp"
 EOF
-
-cat > /mnt/etc/mkinitcpio.d/linux.preset <<"EOF"
-# mkinitcpio preset file for the 'linux' package
-
-ALL_config="/etc/mkinitcpio.conf"
-ALL_kver="/boot/vmlinuz-linux"
-ALL_microcode="/boot/intel-ucode.img"
-
-PRESETS=('default' 'fallback')
-
-#default_config="/etc/mkinitcpio.conf"
-default_image="/boot/initramfs-linux.img"
-default_uki="/efi/EFI/Linux/archlinux-linux.efi"
-default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp"
-
-#fallback_config="/etc/mkinitcpio.conf"
-fallback_image="/boot/initramfs-linux-fallback.img"
-fallback_uki="/efi/EFI/Linux/archlinux-linux-fallback.efi"
-fallback_options="-S autodetect --splash /usr/share/systemd/bootctl/splash-arch.bmp"
-EOF
+done
 
 # Copy ZFS files
 print "Copy ZFS files"
@@ -520,9 +640,9 @@ EOF
       break
     done
   else
-      echo "Setting archlinux-linux.efi as Default Boot Option"
+      echo "Setting archlinux-linux-lts.efi as Default Boot Option"
       cat > /mnt/efi/loader/loader.conf <<"EOF"
-default archlinux-linux.efi
+default archlinux-linux-lts.efi
 #timeout 3
 console-mode max
 editor no
@@ -550,10 +670,10 @@ rm -rf /home/builder
 EOF
 
 # Set root passwd
-print "Set Root Account Password"
-arch-chroot /mnt /bin/passwd
+print "Setting Root Account Password"
+chpasswd --root /mnt/ < /tmp/root-chpasswd.key
 
-if [[ -n $SECUREBOOT ]]; then
+if [[ $SECUREBOOT = 1 ]]; then
     print "Must have Secureboot in Setup Mode"
     arch-chroot /mnt /bin/bash -xe << EOF
     pacman -Syu sbctl --noconfirm
@@ -591,10 +711,8 @@ elif [[ -n "$SECUREBOOTENABLED" ]]; then
   print "Bind ZFS passphrase to Secureboot state on a later boot."
 fi
 
-print "Make Install Snapshot and Bootable Point\nThese are accessible from ZFSBootMenu"
+print "Make Install Snapshot"
 zfs snapshot zroot/ROOT/arch@install
-zfs clone -o mountpoint=/ -o canmount=noauto \
-  zroot/ROOT/arch@install zroot/ROOT/arch_installpoint
 
 if [[ -n "$UMOUNT" ]]; then
   umountandexport
