@@ -13,10 +13,10 @@ set -e
 #   $SECUREBOOT 0 to skip. 1 Requires manual intervention.
 #   $UMOUNT to umount and export after installation.
 #   $AUTOREBOOT to autoreboot following installation.
-# Make sure keys are placed at appropiate locations.
-#  /etc/zfs/zroot.key -- ZFS Root Key
-#  /tmp/swap.key -- Swap Luks Key
-#  /tmp/root-chpasswd.key Root's Password
+# Make sure keys are Defined
+#  $ZFSKEY -- ZFS Encryption Key
+#  $SWAPKEY -- Swap Luks Key
+#  $ROOTKEY -- Root's Password
 # Secureboot requires manual confirmation if set to 1. Set to 0 to skip.
 #
 if [[ -f $1 ]]; then
@@ -90,7 +90,7 @@ print () {
 mkdir -p /tmp/archonzfs/mkinitcpio/{hooks,install}
 urlforcurl=https://raw.githubusercontent.com/m2Giles/archonzfs/master
 curl -s --url $urlforcurl/disksetup -o /tmp/archonzfs/disksetup \
-        --url $urlforcurl/mkinitcpio/{hooks,install}/{clevis,clevis-secret} -o /tmp/archonzfs/{hooks,install}/{clevis,clevis-secret}
+        --url $urlforcurl/mkinitcpio/{hooks,install}/{clevis,clevis-secret} -o /tmp/archonzfs/mkinitcpio/{hooks,install}/{clevis,clevis-secret}
 
 # Get ZFS module on ISO
 print "Getting ZFS Module"
@@ -109,33 +109,78 @@ done
 
 ask "Do you want to repartition $DISK?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
-    curl -s https://raw.githubusercontent.com/m2Giles/archonzfs/master/disksetup | bash
+    set -a
+    /tmp/archonzfs/disksetup ""
+    set +a
+  fi
+fi
+if [[ -z "$EFI" ]]; then
+  print "Select EFI Partition"
+  select ENTRY in $(ls "$DISK"-part*);
+  do
+    print "Reusing $ENTRY as EFI partition"
+    echo "This does not change partition"
+    EFI=$ENTRY
+    break
+  done
+fi
+if [[ -z "$ZFS" ]]; then
+  print "Select ZFS Root Partition"
+  select ENTRY in $(ls "$DISK"-part*);
+  do
+    print "Reusing $ENTRY as ZFS Root partition"
+    echo "This does not change partition"
+    ZFS=$ENTRY
+    break
+  done
+fi
+if [[ -z $SWAPPART ]]; then
+  if (( "$( find "$DISK"-* | wc -l )" > 2 )); then
+  ask "Do you have a Swap Partition? Requires PARTLABEL = SWAP."
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      select ENTRY in $(ls "$DISK"-part*);
+      do
+        print "Reusing $ENTRY as Swap partition"
+        echo "Not Checking PARTLABEL = SWAP."
+        echo "This does not change partition settings"
+        ask "Do you wish to Resume from this partition. Requires Swap > Memory."
+          if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo "Not checking for Swap > Memory"
+            echo "Hibernation will fail if not true."
+            SWAPRESUME=1
+          fi
+        break
+      done
+    fi
   fi
 fi
 
-if [[ -n $SWAPPART ]]; then
+if [[ -n $SWAPRESUME ]]; then
     print "Create Encrypted Swap"
     SWAP=/dev/mapper/swap
-    if [[ ! -f /tmp/swap.key ]]; then
-    passask "Swap LUKs Passphrase" "/tmp/swap.key"
+    if [[ ! -f $SWAPKEY ]]; then
+    SWAPKEY=/tmp/swap.key
+    passask "Swap LUKs Passphrase" "$SWAPKEY"
     fi
     cryptsetup luksFormat --batch-mode --key-file=/tmp/swap.key "$SWAPPART"
-    cryptsetup open --key-file=/tmp/swap.key "$SWAPPART" swap
+    cryptsetup open --key-file="$SWAPKEY" "$SWAPPART" swap
     mkswap -q $SWAP
     swapon $SWAP
 fi
 
 # Set ZFS passphrase
-if [[ ! -f /etc/zfs/zroot.key ]]; then
+if [[ ! -f $ZFSKEY ]]; then
+ZFSKEY=/etc/zfs/zroot.key
 print "Set ZFS passphrase for Encrypted Datasets"
-passask "ZFS Passphrase" "/etc/zfs/zroot.key"
+passask "ZFS Passphrase" "$ZFSKEY"
 fi
 
 # Set Root Account Password
-if [[ ! -f /tmp/root-chpasswd.key ]]; then
+if [[ ! -f $ROOTKEY ]]; then
+ROOTKEY=/tmp/root-chpasswd.key
 print "Set Root Account Password for new Installtion"
 passask "Root Password" "/tmp/root.key"
-awk '{ print "root:" $0 }' /tmp/root.key > /tmp/root-chpasswd.key
+awk '{ print "root:" $0 }' /tmp/root.key > "$ROOTKEY"
 fi
 
 if [[ -z "$HOSTNAME" ]]; then
@@ -147,7 +192,6 @@ if [[ -z "${LINUXARRAY[*]}" ]]; then
 LINUXARRAY=(linux-lts)
 ask "Do you wish to install additional kernel's? Default Kernel is Linux-lts."
   if [[ $REPLY =~ ^[Yy]$ ]]; then
-    ADDKERNEL=1
     cat > /tmp/listkernels << EOF
     linux
     linux-zen
@@ -157,7 +201,7 @@ count=$(wc -l < /tmp/listkernels)
 kernelselect
   fi
 fi
-INSTALLARRAY=("${LINUXARRAY[@]:1}")
+LINUXARRAYHEADERS=( "${LINUXARRAY[@]/%/-headers}" )
 
 if [[ -z "$ZFSREMOTE" ]]; then
 ask "Do you want to have SSH Access (Remote) to ZFSBootMenu"
@@ -284,11 +328,10 @@ sed -i 's/#\(Parallel\)/\1/' /etc/pacman.conf
 
 # Install
 print "Pacstrap"
-pacstrap /mnt           \
+pacstrap /mnt "${LINUXARRAY[*]}" \
+      "${LINUXARRAYHEADERS[*]}" \
       base              \
       base-devel        \
-      linux-lts         \
-      linux-lts-headers \
       linux-firmware    \
       intel-ucode       \
       neovim            \
@@ -310,13 +353,6 @@ print "Configure Pacman for Color and Parallel Downloads"
 sed -i 's/#\(Color\)/\1/' /mnt/etc/pacman.conf
 sed -i "/Color/a\\ILoveCandy" /mnt/etc/pacman.conf
 sed -i 's/#\(Parallel\)/\1/' /mnt/etc/pacman.conf
-
-if [[ -n "$ADDKERNEL" ]]; then
-  for i in "${INSTALLARRAY[@]}"
-  do
-    pacstrap /mnt "$i" "$i-headers"
-  done
-fi
 
 # Copy Reflector Over
 print "Copy Reflector Configuration"
@@ -344,7 +380,7 @@ sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/keys/secret.jwe)" >> /mnt/etc/mkinitcpio.conf
 if [[ -n "$SWAPRESUME" ]]; then
     echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis encrypt resume clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
-    CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=UUID=$(blkid $SWAPPART | awk '{ print $2 }' | cut -d\" -f 2):swap:allow-discards resume=$SWAP nowatchdog"
+    CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP nowatchdog"
 else
     echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
     CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog"
@@ -394,10 +430,9 @@ print "TPM2 unlock of zfs root dataset"
 mkdir /mnt/keys
 cp /etc/zfs/zroot.key /mnt/keys/zroot.key
 print "Getting Clevis-Secret Hook"
-curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/hooks/clevis-secret" -o /mnt/etc/initcpio/hooks/clevis-secret
-curl "https://raw.githubusercontent.com/m2Giles/archonzfs/main/mkinitcpio/install/clevis-secret" -o /mnt/etc/initcpio/install/clevis-secret
+cp -r /tmp/archonzfs/mkinitcpio/* /mnt/etc/initcpio/
 
-if [[ -n $SWAPPART ]]; then
+if [[ -n $SWAPRESUME ]]; then
       print "TPM2 unlock of LUKs Swap Partition"
       cp /tmp/swap.key /mnt/keys/swap.key
       arch-chroot /mnt /bin/bash -xe << EOF
@@ -410,9 +445,9 @@ if [[ -n $SWAPPART ]]; then
 EOF
     shred /mnt/keys/swap.key
     rm /mnt/keys/swap.key
-    echo "swap UUID=$(blkid "$SWAPPART" | awk '{ print $2 }' | cut -d\" -f 2) none discard" >> /mnt/etc/crypttab
-    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/hooks/clevis" -o /mnt/etc/initcpio/hooks/clevis
-    curl "https://raw.githubusercontent.com/kishorv06/arch-mkinitcpio-clevis-hook/main/install/clevis" -o /mnt/etc/initcpio/install/clevis
+    echo "swap PARTLABEL=SWAP none discard" >> /mnt/etc/crypttab
+elif [[ -n $SWAPPART ]]; then
+  echo "swap PARTLABEL=SWAP /dev/urandom swap,cipher=aes-cbc-essiv:sha256,size=256"
 fi
 
 print "make AUR builder"

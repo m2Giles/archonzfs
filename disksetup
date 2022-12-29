@@ -17,7 +17,7 @@ print () {
     ask "Size of EFI Partition in [MiB]. Minimum is 512 MiB:"
     if (( "$REPLY" >= 512 )); then break; else print "Oops. Too small, $REPLY is less than minimum is 512 [MiB]"; fi
   done
-  sgdisk -n1:1M:+"$REPLY"M -t1:EF00 "$DISK"
+  sgdisk -n1:1M:+"$REPLY"M -t1:EF00 -c1:EFI "$DISK"
   EFI="$DISK-part1"
 
   ask "Do you want a Swap Partition?"
@@ -46,52 +46,18 @@ print () {
           else
             ask "Size of Swap Partition in [GiB]?"
           fi
-          sgdisk -n2:0:+"$REPLY"G -t2:8200 "$DISK"
-          SWAPPART="$DISK-part2"
+          sgdisk -n2:0:+"$REPLY"G -t2:8200 -c2:SWAP "$DISK"
+          export SWAPPART="$DISK-part2"
       fi
 
-  # ZFS Partition
-  sgdisk -n3:0:0 -t3:BF00 "$DISK"
-  ZFS="$DISK-part3"
+# ZFS Partition
+sgdisk -n3:0:0 -t3:BF00 -c3:ZFS "$DISK"
+ZFS="$DISK-part3"
 
-  # notify Kernel
-  partprobe "$DISK"
+# notify Kernel
+partprobe "$DISK"
 
-  # Format EFI Partition
-  sleep 1
-  echo "Formatting EFI Partition"
-  mkfs.vfat -F32 "$EFI"
-else
-  if [[ -z "$EFI" ]]; then
-    print "Select EFI Partition"
-    select ENTRY in $(ls "$DISK"-part*);
-    do
-      print "Reusing $ENTRY as EFI partition"
-      echo "This does not change partition"
-      EFI=$ENTRY
-      break
-    done
-  fi
-  if [[ -z "$ZFS" ]]; then
-    print "Select ZFS Root Partition"
-    select ENTRY in $(ls "$DISK"-part*);
-    do
-      print "Reusing $ENTRY as ZFS Root partition"
-      echo "This does not change partition"
-      ZFS=$ENTRY
-      break
-    done
-  fi
-  if [[ -z $SWAPPART ]]; then
-    ask "Do you have a Swap Partition?"
-      if [[ $REPLY =~ ^[Yy]$ ]]; then
-        select ENTRY in $(ls "$DISK"-part*);
-        do
-          print "Reusing $ENTRY as Swap partition"
-          echo "This does not change partition settings"
-          SWAPPART=$ENTRY
-          break
-        done
-      fi
-  fi
-fi
+# Format EFI Partition
+sleep 1
+echo "Formatting EFI Partition"
+mkfs.vfat -F32 "$EFI"
