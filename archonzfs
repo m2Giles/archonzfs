@@ -227,6 +227,9 @@ if [[ ! -f $ZFSKEY ]]; then
 ZFSKEY=/etc/zfs/zroot.key
 print "Set ZFS passphrase for Encrypted Datasets"
 passask "ZFS Passphrase" "$ZFSKEY"
+else
+cat "$ZFSKEY" > /etc/zfs/zroot.key
+ZFSKEY=/etc/zfs/zroot.key
 fi
 
 # Set Root Account Password
@@ -331,7 +334,7 @@ zpool create -f -o ashift=12              \
                 -O compression=lz4        \
                 -O encryption=aes-256-gcm \
                 -O keyformat=passphrase   \
-                -O keylocation=file:///etc/zfs/zroot.key     \
+                -O keylocation=file://"$ZFSKEY"     \
                 zroot "$ZFS"
 
 # Build Dataset Tree
@@ -482,7 +485,7 @@ EOF
 # Clevis TPM unlock preparation & getting hook
 print "TPM2 unlock of zfs root dataset"
 mkdir /mnt/keys
-cp /etc/zfs/zroot.key /mnt/keys/zroot.key
+cp "$ZFSKEY" /mnt/keys/zroot.key
 print "Getting Clevis-Secret Hook"
 mkdir -p /mnt/etc/initcpio/{hooks,install}
 cp "$tmpdir"/mkinitcpio/{hooks,install}/clevis-secret /mnt/etc/initcpio/{hooks,install}/clevis-secret
@@ -491,7 +494,7 @@ if [[ -n $SWAPRESUME ]]; then
       mkswap -q "$SWAP"
       swapon "$SWAP"
       print "TPM2 unlock of LUKs Swap Partition"
-      cp /tmp/swap.key /mnt/keys/swap.key
+      cp "$SWAPKEY" /mnt/keys/swap.key
       arch-chroot /mnt /bin/bash -xe << EOF
       pacman -Syu --noconfirm \
                   luksmeta    \
@@ -687,7 +690,7 @@ EOF
 
 # Set root passwd
 print "Setting Root Account Password"
-chpasswd --root /mnt/ < /tmp/root-chpasswd.key
+chpasswd --root /mnt/ < "$ROOTKEY"
 
 if [[ $SECUREBOOT = 1 ]]; then
     print "Must have Secureboot in Setup Mode"
