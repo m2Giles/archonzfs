@@ -278,7 +278,7 @@ elif [[ -f "$SSHKEY" ]]; then
   ZFSREMOTE=1
 fi
 
-if [[ -z "$NOCHANGEDEFAULT" && -z "$DEFUALTBOOT" ]]; then
+if [[ -z "$NOCHANGEDEFAULT" && -z "$DEFAULTBOOT" ]]; then
 print "Default Boot Choice is archlinux-linux-lts.efi UKI\nKernel Command Line Editor is disabled, use ZFSBootMenu to edit KCL"
 ask "Do you wish to change the Default Boot Choice during Installation?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
