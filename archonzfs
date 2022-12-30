@@ -240,7 +240,7 @@ ROOTKEY=/tmp/root.key
 print "Set Root Account Password for new Installtion"
 passask "Root Password" "/tmp/root.key"
 fi
-awk '{ print "root:" $0 }' "$ROOTKEY" > "$ROOTKEYCHPASSWD"
+awk '{ print "root:" $0 }' "$ROOTKEY" > /tmp/root-chpasswd.key
 
 if [[ -z "$HOSTNAMEINSTALL" ]]; then
 ask "Please enter hostname for Installation:"
@@ -712,7 +712,7 @@ EOF
 
 # Set root passwd
 print "Setting Root Account Password"
-chpasswd --root /mnt/ < "$ROOTKEYCHPASSWD"
+chpasswd --root /mnt/ < /tmp/root-chpasswd.key
 
 if [[ $SECUREBOOT = 1 ]]; then
     print "Must have Secureboot in Setup Mode"
