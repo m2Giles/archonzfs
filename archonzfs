@@ -8,14 +8,15 @@ set -e
 #   $ZFS Partition for target zfs install location.
 #   $LINUXARRAY for array of Linux Kernels to Install.
 #   $HOSTNAMEINSTALL for hostname of install.
-#   $CHANGEDEFAULT Boot Option 0 to skip 1 requires manual intervention
-#   $SECUREBOOT 0 to skip. 1 Requires manual intervention.
+#   $NOCHANGEDEFAULT Boot Option to Keep Default Boot Option
+#   $SECUREBOOT 0 to skip. 1 to make and enroll keys if in setup mode.
 #   $UMOUNT to umount and export after installation.
 #   $AUTOREBOOT to autoreboot following installation.
 # Make sure keys are Defined
 #  $ZFSKEY -- ZFS Encryption Key
 #  $ROOTKEY -- Root's Password
 # Optional Variables:
+#   $DEFAULTBOOT default boot option.
 #   $SWAPPART Partition for target Swap Partition (Require PARTLABEL=SWAP)
 #   $SWAPRESUME for Hibernation Resume (Requires Swap > Memory)
 #   $SWAPKEY for Hibernation Resume Key
@@ -275,11 +276,20 @@ ask "Do you want to have SSH Access (Remote) to ZFSBootMenu"
   fi
 fi
 
-if [[ -z "$CHANGEDEFAULT" ]]; then
+if [[ -z "$NOCHANGEDEFAULT" || -z "$DEFUALTBOOT" ]]; then
 print "Default Boot Choice is archlinux-linux-lts.efi UKI\nKernel Command Line Editor is disabled, use ZFSBootMenu to edit KCL"
 ask "Do you wish to change the Default Boot Choice during Installation?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
-    CHANGEDEFAULT=1
+      LINUXARRAYEFI=( "${LINUXARRAY[@]/%/\.efi}" )
+      LINUXARRAYEFI=( "${LINUXARRAYEFI[@]/#/archlinux-}" )
+      printf "%s\n" "${LINUXARRAYEFI[@]}" > /tmp/listboot
+    echo "zfsbootmenu.conf" >> /tmp/list/boot
+    select ENTRY in $(cat /tmp/listboot);
+    do
+      echo "Setting $ENTRY as Default Boot Option"
+      DEFAULTBOOT=$ENTRY
+      break
+    done
   fi
 fi
 
@@ -567,7 +577,8 @@ systemctl enable    \
   zfs-mount         \
   zfs-import.target \
   zfs.target        \
-  zfs-zed
+  zfs-zed           \
+  systemd-boot-update.service
 EOF
 
 print "Install ZFSBootMenu"
@@ -659,27 +670,21 @@ cat > /mnt/efi/loader/entries/zfsbootmenu-backup.conf <<"EOF"
 title ZFSBootMenu (Backup)
 efi   /EFI/zbm/zfsbootmenu-backup.EFI
 EOF
-if [[ "$CHANGEDEFAULT" = 1 ]]; then
-    ls /mnt/efi/EFI/Linux/ >> /tmp/listboot
-    ls /mnt/efi/loader/entries/ >> /tmp/listboot
-    select ENTRY in $(cat /tmp/listboot);
-    do
-      echo "Setting $ENTRY as Default Boot Option"
-      cat > /mnt/efi/loader/loader.conf <<EOF
-default $ENTRY
-#timeout 3
-console-mode max
-editor no
+if [[ -n "$DEFAULTBOOT" ]]; then
+  print "Setting $DEFAULTBOOT as the Default Boot Option."
+  cat > /mnt/efi/loader/loader.conf <<EOF
+  default $DEFAULTBOOT
+  #timeout 3
+  console-mode max
+  editor no
 EOF
-      break
-    done
-  else
-      echo "Setting archlinux-linux-lts.efi as Default Boot Option"
-      cat > /mnt/efi/loader/loader.conf <<"EOF"
-default archlinux-linux-lts.efi
-#timeout 3
-console-mode max
-editor no
+else
+  print "Setting archlinux-linux-lts.efi as Default Boot Option."
+  cat > /mnt/efi/loader/loader.conf <<"EOF"
+  default archlinux-linux-lts.efi
+  #timeout 3
+  console-mode max
+  editor no
 EOF
   fi
 
@@ -709,16 +714,12 @@ chpasswd --root /mnt/ < "$ROOTKEY"
 
 if [[ $SECUREBOOT = 1 ]]; then
     print "Must have Secureboot in Setup Mode"
-    arch-chroot /mnt /bin/bash -xe << EOF
-    pacman -Syu sbctl --noconfirm
-    sbctl status
-EOF
-    ask "Is Secureboot in Setup Mode?"
-      if [[ $REPLY =~ ^[Yy]$ ]]; then
-      ask "Do you wish to enroll Microsoft Keys as well for Option-ROM?"
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+    pacman -S sbctl --noconfirm
+    SETUPMODE=$(sbctl status | grep Setup | awk '{ print $4 }')
+      if [[ $SETUPMODE = Enabled ]]; then
           print "Generatng and Enrolling Keys with Microsoft Keys"
           arch-chroot /mnt /bin/bash -xe << EOF
+          pacman -Syu sbctl --noconfirm
           sbctl create-keys
           sbctl enroll-keys --microsoft
           sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
@@ -729,17 +730,28 @@ EOF
           sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
           sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
           sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
-          systemctl enable systemd-boot-update.service
           sbctl status
 EOF
           SECUREBOOTENABLED=1
         else
-          print "Configure Secureboot Support on a later boot"
-        fi
+          print "Enroll Keys on a later boot when in setup mode"
+          arch-chroot /mnt /bin/bash -xe << EOF
+          pacman -Syu sbctl --noconfirm
+          sbctl create-keys
+          sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
+          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
+          sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
+          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
+          sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
+          sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
+          sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
+          sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+          sbctl status
+EOF
       fi
-  fi
+fi
 
-if [[ -n "$SECUREBOOTENABLED" && -n "$SWAPPART" ]]; then
+if [[ -n "$SECUREBOOTENABLED" && -n "$RESUME" ]]; then
   print "Bind LUKs Key and ZFS passphrase to Secureboot state on a later boot."
 elif [[ -n "$SECUREBOOTENABLED" ]]; then
   print "Bind ZFS passphrase to Secureboot state on a later boot."
