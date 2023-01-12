@@ -12,6 +12,7 @@ set -e
 #   $SECUREBOOT 0 to skip. 1 to make and enroll keys if in setup mode.
 #   $UMOUNT to umount and export after installation.
 #   $AUTOREBOOT to autoreboot following installation.
+#   $NOCREATEUSER Do Not Create a User
 # Make sure keys are Defined
 #  $ZFSKEY -- ZFS Encryption Key
 #  $ROOTKEY -- Root's Password
@@ -21,6 +22,9 @@ set -e
 #   $SWAPRESUME for Hibernation Resume (Requires Swap > Memory)
 #   $SWAPKEY for Hibernation Resume Key
 #   $SSHKEY -- Public Key for Remote Login to ZFSBootMenu
+#   $USERNAME -- Name of User
+#   $USERPASS -- User's Password
+#   $PRIVILEGED -- if the User has sudo priviliges and is member of Wheel Group
 # Keys are Files with the passphrase/password inside them.
 # Secureboot/Change Default Boot Option requires manual confirmation if set to 1. Set to 0 to skip.
 #
@@ -241,6 +245,28 @@ print "Set Root Account Password for new Installtion"
 passask "Root Password" "/tmp/root.key"
 fi
 awk '{ print "root:" $0 }' "$ROOTKEY" > /tmp/root-chpasswd.key
+
+if [[ -z $USERPASS && -z $USERNAME && -z $NOCREATEUSER ]]; then
+  ask "Would you like to create a Privileged User?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    if [[ ! -f $USERPASS ]]; then
+      USERPASS=/tmp/user.key
+    fi
+    ask "Name of Privileged User you would like to create?"
+    USERNAME=$REPLY
+    passask "Password and Encryption Key for Privileged User" "$USERPASS"
+    awk "{ print $USERNAME: $0 }" "$USERPASS" > /tmp/user-chpasswd.key
+    PRIVILEGED=1
+  fi
+else
+    if [[ ! -f $USERPASS ]]; then
+      USERPASS=/tmp/user.key
+    fi
+    ask "Name of Unprivileged User you would like to create?"
+    USERNAME=$REPLY
+    passask "Password and Encryption Key for Privileged User" "$USERPASS"
+    awk "{ print $USERNAME: $0 }" "$USERPASS" > /tmp/user-chpasswd.key
+fi
 
 if [[ -z "$HOSTNAMEINSTALL" ]]; then
 ask "Please enter hostname for Installation:"
@@ -553,6 +579,154 @@ cp /mnt/usr/share/plymouth/arch-logo.png /mnt/usr/share/plymouth/themes/spinner/
 sed -i 's/.96/.5/' /mnt/usr/share/plymouth/themes/spinner/spinner.plymouth
 echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
 
+if [[ -n $USERNAME && -n $USERPASS ]]; then
+  zfs create -o encryption=on -o keyformat=passphrase -o keylocation=prompt -o canmount=noauto zroot/data/home/"$USERNAME"
+  zfs set home."$HOSTNAMEINSTALL".automount:user="$USERNAME" zroot/data/home/"$USERNAME"
+  zfs mount -a
+  chown "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"
+  chmod 0700 /mnt/home/"$USERNAME"
+
+  if [[ -n "$PRIVILEGED" ]]; then
+    useradd --root /mnt/ -mG wheel "$USERNAME"
+    echo "$USERNAME ALL=(ALL) ALL" > /mnt/etc/sudoers.d/"$USERNAME"
+  else
+    useradd --root /mnt/ -m "$USERNAME"
+  fi
+  chpasswd --root /mnt/ < /tmp/user-chpasswd.key
+  echo "$USERNAME ALL = NOPASSWD: /usr/bin/systemctl start home-$USERNAME.automount" >> /mnt/etc/sudoers.d/"$USERNAME"
+
+  cat > /mnt/etc/systemd/system/home-"$USERNAME".mount << EOF
+[Unit]
+Description=Home Directory for $USERNAME
+Requires=user@1000.service
+Before=user@1000.service
+
+[Mount]
+Where=/home/$USERNAME
+What=zroot/data/home/$USERNAME
+Type=zfs
+Options=defaults,atime,relatime,nodev,exec,rw,suid,nomand,zfsutil
+
+[Install]
+RequiredBy=user@1000.service
+EOF
+
+  cat > /mnt/etc/systemd/system/home-"$USERNAME".automount << EOF
+[Unit]
+Description=Automount Home Directory for $USERNAME
+Requires=user@1000.service
+Before=user@1000.service
+
+[Mount]
+Where=/home/$USERNAME
+TimeoutIdleSec=20
+
+[Install]
+RequiredBy=user@1000.service
+EOF
+
+  cat > /mnt/etc/systemd/system/zfs-unload-"$USERNAME".service << EOF
+[Unit]
+Description=Unload Key after session Ends for $USERNAME
+BindsTo=$(systemd-escape home/"$USERNAME").mount
+Requires=$(systemd-escape home/"$USERNAME").mount
+Before=$(systemd-escape home/"$USERNAME").mount
+Conflicts=umount.target
+Before=umount.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutSec=10
+ExecStop=-/usr/bin/zfs unload-key zroot/data/home/$USERNAME
+
+[Install]
+RequiredBy=$(systemd-escape home/"$USERNAME").mount
+EOF
+
+fi
+
+if [ ! -f /mnt/usr/local/bin/mount-zfs-homedir ]; then
+cat > /mnt/usr/local/bin/mount-zfs-homedir << "EOF"
+#!/bin/bash
+
+set -eu
+
+PASS=$(cat -)
+zfs get canmount -s local -H -o name,value | while read volname canmount; do
+  [[ \"$canmount\" = 'noatuo' ]] || continue
+  user=$(zfs get home.archiso.automount:user -s local -H -o value \"$volname\")
+  [[ \"$user\" = \"$PAM_USER\" ]] || continue
+  zfs load-key \"$volname\" <<< \"$PASS\" || true
+done
+EOF
+fi
+sed -i s/archiso/"$HOSTNAMEINSTALL"/ /mnt/usr/local/bin/mount-zfs-homedir
+chmod +x /mnt/usr/local/bin/mount-zfs-homedir
+
+if [ ! -f /mnt/etc/profile.d/zfshomeunlock.sh ]; then
+cat > /mnt/etc/profile.d/zfshomeunlock.sh << "EOF"
+if { [ -t 0 ] && [ -t 2 ]; }; then
+
+# Check if home is not-mounted and enabled. If so load key, mount, and cd into new mount
+        if { [ "$(/usr/bin/systemctl is-active home-$USER.mount)" != "active" ]  && [ "$(/usr/bin/systemctl is-enabled home-$USER.automount)" = "enabled" ]; } > /dev/null 2>&1 ; then
+                /usr/bin/zfs load-key zroot/data/home/$USER
+                sudo /usr/bin/systemctl start home-$USER.automount
+                cd /home/$USER
+        fi
+fi
+EOF
+fi
+
+cat > /mnt/etc/pam.d/system-login << "EOF"
+#%PAM-1.0
+
+auth       required   pam_shells.so
+auth       requisite  pam_nologin.so
+auth       include    system-auth
+auth       optional   pam_exec.so          expose_authtok /usr/local/bin/mount-zfs-homedir
+
+account    required   pam_access.so
+account    required   pam_nologin.so
+account    include    system-auth
+
+password   include    system-auth
+
+session    optional   pam_loginuid.so
+session    optional   pam_keyinit.so       force revoke
+session    include    system-auth
+auth       optional   pam_exec.so          expose_authtok /usr/local/bin/mount-zfs-homedir
+session    optional   pam_motd.so
+session    optional   pam_mail.so          dir=/var/spool/mail standard quiet
+-session   optional   pam_systemd.so
+session    required   pam_env.so
+EOF
+
+if [ ! -f /mnt/etc/systemd/system/zfs-unload-keys.service ]; then
+  cat > /mnt/etc/systemd/system/zfs-unload-keys.service << "EOF"
+[Unit]
+Description=Unload ZFS Keys periodically if not in use.
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/zfs unload-key -a
+EOF
+fi
+
+if [ ! -f /mnt/etc/systemd/system/zfs-unload-keys.timer ]; then
+  cat > /mnt/etc/systemd/system/zfs-unload-keys.timer << "EOF"
+[Unit]
+Description=Unload ZFS Keys periodically if not in use.
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target
+EOF
+fi
+
 # Chroot!
 print "Chroot into System"
 arch-chroot /mnt /bin/bash -xe << EOF
@@ -580,8 +754,21 @@ systemctl enable    \
   zfs-import.target \
   zfs.target        \
   zfs-zed           \
+  zfs-unload-keys.timer \
+  home-"$USERNAME".automount \
   systemd-boot-update.service
 EOF
+
+print "SSH Configuration"
+mkdir /mnt/etc/ssh/sshd.d/
+echo "Include /etc/ssh/sshd.d/override.conf" >> /mnt/etc/ssh/sshd
+cat > /mnt/etc/ssh/sshd.d/override.conf << EOF
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys
+PasswordAuthentication yes
+EOF
+chmod 0644 /mnt/etc/ssh/sshd.d/override.conf
 
 print "Install ZFSBootMenu"
 if [[ "$ZFSREMOTE" = 1 || -f "$SSHKEY" ]]; then
@@ -691,7 +878,7 @@ EOF
   fi
 
 mkdir -p /mnt/pacman.d/hooks
-cat > /mnt/pacman.d/hooks/95-systemd-boot.hook << "EOF"
+cat > /mnt/etc/pacman.d/hooks/95-systemd-boot.hook << "EOF"
 [Trigger]
 Type = Package
 Operation = Upgrade
