@@ -84,20 +84,6 @@ LazyUnmount=On
 RequiredBy=user@$UID.service
 EOF
 
-  cat > /mnt/etc/systemd/system/home-"$USERNAME".automount << EOF
-[Unit]
-Description=Automount Home Directory for $USERNAME
-Requires=user@$UID.service
-Before=user@$UID.service
-
-[Mount]
-Where=/home/$USERNAME
-TimeoutIdleSec=20
-
-[Install]
-RequiredBy=user@$UID.service
-EOF
-
   cat > /etc/systemd/system/zfs-unload-"$USERNAME".service << EOF
 [Unit]
 Description=Unload Key after session Ends for $USERNAME
@@ -114,7 +100,7 @@ TimeoutSec=0
 ExecStop=-/usr/bin/zfs unload-key zroot/data/home/$USERNAME
 
 [Install]
-RequiredBy=user@$UID.service
+RequiredBy=$(systemd-escape home/"$USERNAME").mount
 EOF
 
 
@@ -192,12 +178,12 @@ cat > /etc/profile.d/zfshomeunlock.sh << "EOF"
 if { [ -t 0 ] && [ -t 2 ]; }; then
 
 # Check if home is not-mounted and enabled. If so load key, mount, and cd into new mount
-        if { [ "$(/usr/bin/systemctl is-active home-$USER.mount)" != "active" ]  && [ "$(/usr/bin/systemctl is-enabled home-$USER.automount)" = "enabled" ]; } > /dev/null 2>&1 ; then
+        if { [ "$(/usr/bin/systemctl is-active home-$USER.mount)" != "active" ]  && [ "$(/usr/bin/systemctl is-enabled home-$USER.mount)" = "enabled" ]; } > /dev/null 2>&1 ; then
                 /usr/bin/zfs load-key zroot/data/home/$USER
-                sudo /usr/bin/systemctl start home-$USER.automount
+                sudo /usr/bin/systemctl start home-$USER.mount
                 cd /home/$USER
         fi
 fi
 EOF
 fi
-systemctl enable home-"$USERNAME".automount zfs-unload-keys.timer
+systemctl enable home-"$USERNAME".mount zfs-unload-keys.timer
