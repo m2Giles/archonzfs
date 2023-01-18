@@ -22,9 +22,6 @@ set -e
 #   $SWAPRESUME for Hibernation Resume (Requires Swap > Memory)
 #   $SWAPKEY for Hibernation Resume Key
 #   $SSHKEY -- Public Key for Remote Login to ZFSBootMenu
-#   $USERNAME -- Name of User
-#   $USERPASS -- User's Password
-#   $PRIVILEGED -- if the User has sudo priviliges and is member of Wheel Group
 # Keys are Files with the passphrase/password inside them.
 # Secureboot/Change Default Boot Option requires manual confirmation if set to 1. Set to 0 to skip.
 #
@@ -126,7 +123,7 @@ ask "Do you want to repartition $DISK?"
   # EFI Partition
   sgdisk -Zo "$DISK"
   while true; do
-    ask "Size of EFI Partition in [MiB]. Minimum is 512 MiB:"
+    ask "Size of EFI Partition in [MiB]? Minimum is 512 MiB:"
     if (( "$REPLY" >= 512 )); then break; else print "Oops. Too small, $REPLY is less than minimum is 512 [MiB]"; fi
   done
   sgdisk -n1:1M:+"$REPLY"M -t1:EF00 -c1:EFI "$DISK"
@@ -141,7 +138,7 @@ ask "Do you want to repartition $DISK?"
             SWAPMIN=$(free -h | sed -n '2p' | awk '{ print $2 }')
             SWAPMIN=$(( ${SWAPMIN::-2} + 2 ))
             while true; do
-              ask "Size of Swap Partition in [GiB]? Minimum is $SWAPMIN GiB"
+              ask "Size of Swap Partition in [GiB]? Minimum is $SWAPMIN GiB:"
               if (( "$REPLY" >= "$SWAPMIN" )); then break;
               else
                 print "Oops. Too small, $REPLY GiB is less than minimum $SWAPMIN GiB for Resume Support"
@@ -205,7 +202,7 @@ if [[ -z $SWAPPART ]]; then
         SWAPPART=$ENTRY
         echo "Not Checking PARTLABEL = SWAP."
         echo "This does not change partition settings"
-        ask "Do you wish to Resume from this partition. Requires Swap > Memory."
+        ask "Do you wish to Resume from this partition? Requires Swap > Memory."
           if [[ $REPLY =~ ^[Yy]$ ]]; then
             echo "Not checking for Swap > Memory"
             echo "Hibernation will fail if not true."
@@ -246,28 +243,6 @@ passask "Root Password" "/tmp/root.key"
 fi
 awk '{ print "root:" $0 }' "$ROOTKEY" > /tmp/root-chpasswd.key
 
-if [[ -z $USERPASS && -z $USERNAME && -z $NOCREATEUSER ]]; then
-  ask "Would you like to create a Privileged User?"
-  if [[ $REPLY =~ ^[Yy]$ ]]; then
-    if [[ ! -f $USERPASS ]]; then
-      USERPASS=/tmp/user.key
-    fi
-    ask "Name of Privileged User you would like to create?"
-    USERNAME=$REPLY
-    passask "Password and Encryption Key for Privileged User" "$USERPASS"
-    awk "{ print $USERNAME: $0 }" "$USERPASS" > /tmp/user-chpasswd.key
-    PRIVILEGED=1
-  fi
-else
-    if [[ ! -f $USERPASS ]]; then
-      USERPASS=/tmp/user.key
-    fi
-    ask "Name of Unprivileged User you would like to create?"
-    USERNAME=$REPLY
-    passask "Password and Encryption Key for Privileged User" "$USERPASS"
-    awk "{ print $USERNAME: $0 }" "$USERPASS" > /tmp/user-chpasswd.key
-fi
-
 if [[ -z "$HOSTNAMEINSTALL" ]]; then
 ask "Please enter hostname for Installation:"
 HOSTNAMEINSTALL="$REPLY"
@@ -289,14 +264,28 @@ fi
 LINUXARRAYHEADERS=( "${LINUXARRAY[@]/%/-headers}" )
 
 if [[ ! -f "$SSHKEY" && -z "$ZFSREMOTE" ]]; then
-ask "Do you want to have SSH Access (Remote) to ZFSBootMenu"
+ask "Do you want to have SSH Access (Remote) to ZFSBootMenu?"
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     ZFSREMOTE=1
     if [[ ! -f "$SSHKEY" ]]; then
     ask "Do you have an SSH Public Key you wish to upload now?"
       if [[ $REPLY =~ ^[Yy]$ ]]; then
-        ask "What is the path to the SSH Public Key"
+        ask "What is the full path to the SSH Public Key?"
         SSHKEY=$REPLY
+        while [ ! -f "$SSHKEY" ];
+        do
+        if [ ! -f "$SSHKEY" ]; then
+           ask "$SSHKEY does not exist. Would you like to try again?"
+           if [[ $REPLY =~ ^[Yy]$ ]]; then
+             ask "What is the full path to the SSH Public Key?"
+             SSHKEY=$REPLY
+           else
+             break
+           fi
+        else
+          break
+        fi
+        done
       fi
     fi
   fi
@@ -337,7 +326,7 @@ fi
 
 if [[ -z "$AUTOREBOOT" ]]; then
   if [[ -n $UMOUNT ]]; then
-    ask "Do you wish to reboot automatically following Installation?"
+    ask "Do you want to reboot automatically following Installation?"
       if [[ $REPLY =~ ^[Yy]$ ]]; then
         AUTOREBOOT=1
       fi
@@ -354,7 +343,7 @@ if [[ -n "$AUTOREBOOT" && -z "$UMOUNT" ]]; then
         if [[ $REPLY =~ ^[Yy]$ ]]; then
           UMOUNT=1
         else
-          echo "Unsetting Autoreboot"
+          echo "Unsetting Autoreboot."
           unset AUTOREBOOT
         fi
       fi
@@ -445,6 +434,7 @@ pacstrap /mnt "${LINUXARRAY[@]}" \
       tpm2-tools        \
       openssh           \
       bash-completion   \
+      arch-install-scripts \
       systemd-resolvconf
 
 # Mask mkinitcpio Hook to Speed up installs
@@ -522,10 +512,10 @@ cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache
 ln -sf /run/systemd/resolve/stub-resolv.conf /mnt/etc/resolve.conf
 
 # Add archzfs repo
-cat >> /mnt/etc/pacman.conf << EOF
+cat >> /mnt/etc/pacman.conf << "EOF"
 [archzfs]
-Server = https://zxcvfdsa.com/archzfs/archzfs/x86_64
-Server = http://archzfs.com/archzfs/x86_64
+Server = https://zxcvfdsa.com/archzfs/$repo/$arch
+Server = http://archzfs.com/$repo/$arch
 EOF
 
 # Clevis TPM unlock preparation & getting hook
@@ -542,6 +532,8 @@ if [[ -n $SWAPRESUME ]]; then
       swapon "$SWAP"
       print "TPM2 unlock of LUKs Swap Partition"
       cp "$SWAPKEY" /mnt/keys/swap.key
+      cp "$tmpdir"/mkinitcpio/hooks/clevis /mnt/etc/initcpio/hooks/clevis
+      cp "$tmpdir"/mkinitcpio/install/clevis /mnt/etc/initcpio/install/clevis
       arch-chroot /mnt /bin/bash -xe << EOF
       pacman -Syu --noconfirm \
                   luksmeta    \
@@ -579,139 +571,49 @@ cp /mnt/usr/share/plymouth/arch-logo.png /mnt/usr/share/plymouth/themes/spinner/
 sed -i 's/.96/.5/' /mnt/usr/share/plymouth/themes/spinner/spinner.plymouth
 echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
 
-if [[ -n $USERNAME && -n $USERPASS ]]; then
-  zfs create -o encryption=on -o keyformat=passphrase -o keylocation=prompt -o canmount=noauto zroot/data/home/"$USERNAME"
-  zfs set home."$HOSTNAMEINSTALL".automount:user="$USERNAME" zroot/data/home/"$USERNAME"
-  zfs mount -a
-  chown "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"
-  chmod 0700 /mnt/home/"$USERNAME"
-
-  if [[ -n "$PRIVILEGED" ]]; then
-    useradd --root /mnt/ -mG wheel "$USERNAME"
-    echo "$USERNAME ALL=(ALL) ALL" > /mnt/etc/sudoers.d/"$USERNAME"
-  else
-    useradd --root /mnt/ -m "$USERNAME"
-  fi
-  chpasswd --root /mnt/ < /tmp/user-chpasswd.key
-  echo "$USERNAME ALL = NOPASSWD: /usr/bin/systemctl start home-$USERNAME.mount" >> /mnt/etc/sudoers.d/"$USERNAME"
-
-  cat > /mnt/etc/systemd/system/home-"$USERNAME".mount << EOF
-[Unit]
-Description=Home Directory for $USERNAME
-Requires=user@1000.service
-Before=user@1000.service
-
-[Mount]
-Where=/home/$USERNAME
-What=zroot/data/home/$USERNAME
-Type=zfs
-Options=defaults,atime,relatime,nodev,exec,rw,suid,nomand,zfsutil
-
-[Install]
-RequiredBy=user@1000.service
-EOF
-
-  cat > /mnt/etc/systemd/system/zfs-unload-"$USERNAME".service << EOF
-[Unit]
-Description=Unload Key after session Ends for $USERNAME
-BindsTo=$(systemd-escape home/"$USERNAME").mount
-Requires=$(systemd-escape home/"$USERNAME").mount
-Before=$(systemd-escape home/"$USERNAME").mount
-Conflicts=umount.target
-Before=umount.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-TimeoutSec=10
-ExecStop=-/usr/bin/zfs unload-key zroot/data/home/$USERNAME
-
-[Install]
-RequiredBy=$(systemd-escape home/"$USERNAME").mount
-EOF
-
-fi
-
-if [ ! -f /mnt/usr/local/bin/mount-zfs-homedir ]; then
-cat > /mnt/usr/local/bin/mount-zfs-homedir << "EOF"
-#!/bin/bash
-
-set -eu
-
-PASS=$(cat -)
-zfs get canmount -s local -H -o name,value | while read volname canmount; do
-  [[ \"$canmount\" = 'noatuo' ]] || continue
-  user=$(zfs get home.archiso.automount:user -s local -H -o value \"$volname\")
-  [[ \"$user\" = \"$PAM_USER\" ]] || continue
-  zfs load-key \"$volname\" <<< \"$PASS\" || true
-done
-EOF
-fi
-sed -i s/archiso/"$HOSTNAMEINSTALL"/ /mnt/usr/local/bin/mount-zfs-homedir
-chmod +x /mnt/usr/local/bin/mount-zfs-homedir
-
-if [ ! -f /mnt/etc/profile.d/zfshomeunlock.sh ]; then
-cat > /mnt/etc/profile.d/zfshomeunlock.sh << "EOF"
-if { [ -t 0 ] && [ -t 2 ]; }; then
-
-# Check if home is not-mounted and enabled. If so load key, mount, and cd into new mount
-        if { [ "$(/usr/bin/systemctl is-active home-$USER.mount)" != "active" ]  && [ "$(/usr/bin/systemctl is-enabled home-$USER.mount)" = "enabled" ]; } > /dev/null 2>&1 ; then
-                /usr/bin/zfs load-key zroot/data/home/$USER
-                sudo /usr/bin/systemctl start home-$USER.mount
-                cd /home/$USER
-        fi
-fi
-EOF
-fi
-
+print "PAM Modules for ZFS encrypted Homes"
 cat > /mnt/etc/pam.d/system-login << "EOF"
 #%PAM-1.0
 
 auth       required   pam_shells.so
 auth       requisite  pam_nologin.so
+auth       optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
 auth       include    system-auth
-auth       optional   pam_exec.so          expose_authtok /usr/local/bin/mount-zfs-homedir
 
 account    required   pam_access.so
 account    required   pam_nologin.so
 account    include    system-auth
 
+password   optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
 password   include    system-auth
 
 session    optional   pam_loginuid.so
 session    optional   pam_keyinit.so       force revoke
+session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
+session    optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
 session    include    system-auth
-auth       optional   pam_exec.so          expose_authtok /usr/local/bin/mount-zfs-homedir
 session    optional   pam_motd.so
 session    optional   pam_mail.so          dir=/var/spool/mail standard quiet
 -session   optional   pam_systemd.so
 session    required   pam_env.so
 EOF
 
-if [ ! -f /mnt/etc/systemd/system/zfs-unload-keys.service ]; then
-  cat > /mnt/etc/systemd/system/zfs-unload-keys.service << "EOF"
-[Unit]
-Description=Unload ZFS Keys periodically if not in use.
-
-[Service]
-Type=oneshot
-ExecStart=-/usr/bin/zfs unload-key -a
+cat > /mnt/etc/pam.d/su-l << "EOF"
+#%PAM-1.0
+auth            sufficient      pam_rootok.so
+# Uncomment the following line to implicitly trust users in the "wheel" group.
+#auth           sufficient      pam_wheel.so trust use_uid
+# Uncomment the following line to require a user to be in the "wheel" group.
+#auth           required        pam_wheel.so use_uid
+auth            required        pam_unix.so
+auth            optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+account         required        pam_unix.so
+session	        required        pam_unix.so
+session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
+session         optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+password        optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+password        include         system-auth
 EOF
-fi
-
-if [ ! -f /mnt/etc/systemd/system/zfs-unload-keys.timer ]; then
-  cat > /mnt/etc/systemd/system/zfs-unload-keys.timer << "EOF"
-[Unit]
-Description=Unload ZFS Keys periodically if not in use.
-
-[Timer]
-OnBootSec=15min
-OnUnitActiveSec=15min
-
-[Install]
-WantedBy=timers.target
-EOF
-fi
 
 # Chroot!
 print "Chroot into System"
@@ -740,8 +642,6 @@ systemctl enable    \
   zfs-import.target \
   zfs.target        \
   zfs-zed           \
-  zfs-unload-keys.timer \
-  home-"$USERNAME".mount \
   systemd-boot-update.service
 EOF
 
@@ -770,6 +670,8 @@ fi
 zfs set org.zfsbootmenu:commandline="$CMDLINE" zroot/ROOT
 
 print "Configure ZFSBootMenu"
+sed -i 's/BINARIES=/#BINARIES=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
+echo "BINARIES=(/usr/bin/arch-chroot)" >> /mnt/etc/zfsbootmenu/mkinitcpio.conf
 if [[ "$ZFSREMOTE" = 1 || -f "$SSHKEY" ]]; then
   mkdir -p /mnt/etc/zfsbootmenu/initcpio/{hooks,install}
   cp "$tmpdir"/mkinitcpio/hooks/dropbear /mnt/etc/zfsbootmenu/initcpio/hooks/dropbear
@@ -848,22 +750,22 @@ EOF
 if [[ -n "$DEFAULTBOOT" ]]; then
   print "Setting $DEFAULTBOOT as the Default Boot Option."
   cat > /mnt/efi/loader/loader.conf <<EOF
-  default $DEFAULTBOOT
-  #timeout 3
-  console-mode max
-  editor no
+default $DEFAULTBOOT
+#timeout 3
+console-mode max
+editor no
 EOF
 else
   print "Setting archlinux-linux-lts.efi as Default Boot Option."
   cat > /mnt/efi/loader/loader.conf <<"EOF"
-  default archlinux-linux-lts.efi
-  #timeout 3
-  console-mode max
-  editor no
+default archlinux-linux-lts.efi
+#timeout 3
+console-mode max
+editor no
 EOF
   fi
 
-mkdir -p /mnt/pacman.d/hooks
+mkdir -p /mnt/etc/pacman.d/hooks
 cat > /mnt/etc/pacman.d/hooks/95-systemd-boot.hook << "EOF"
 [Trigger]
 Type = Package
