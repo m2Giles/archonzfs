@@ -7,6 +7,9 @@ print () {
 # Enable multilib
 sed -i "/\[multilib\]/,/Include/"'s/^#//' /etc/pacman.conf
 
+zfs create zroot/data/home/steamuser
+zfs mount -a
+
 print "update repos, install AMD vulkan drivers, install steam"
 arch-chroot /mnt /bin/bash -xe << EOF
 pacman -Syu --noconfirm
@@ -21,7 +24,9 @@ pacman -Syu --noconfirm             \
             xorg-xinit              \
             unclutter               \
             steam
-useradd -m steamuser
+useradd steamuser
+chown steamuser:steamuser /home/steamuser
+chmod 0700 /home/steamuser
 mkdir -p /home/steamuser/.config
 cp -r /etc/xdg/openbox /home/steamuser/.config/
 cat >> /home/steamuser/openbox/autostart << EOSF
