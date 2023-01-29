@@ -47,7 +47,7 @@ passask () {
       echo
       [ "$PASS1" = "$PASS2" ] && break || echo "Passwords do not Match. Please try again."
     done
-    echo "$PASS2" > "$2"
+    echo -n "$PASS2" > "$2"
     chmod 000 "$2"
     print "$1 can be reviewed at $2 prior to reboot"
     unset PASS1
@@ -98,9 +98,11 @@ urlforcurl=https://raw.githubusercontent.com/m2Giles/archonzfs/master
 curl -s --url "$urlforcurl/mkinitcpio/hooks/clevis" -o "$tmpdir"/mkinitcpio/hooks/clevis
 curl -s --url "$urlforcurl/mkinitcpio/hooks/clevis-secret" -o "$tmpdir"/mkinitcpio/hooks/clevis-secret
 curl -s --url "$urlforcurl/mkinitcpio/hooks/dropbear" -o "$tmpdir"/mkinitcpio/hooks/dropbear
+curl -s --url "$urlforcurl/mkinitcpio/hooks/plymouth-zfs" -o "$tmpdir"/mkinitcpio/hooks/plymouth-zfs
 curl -s --url "$urlforcurl/mkinitcpio/install/clevis" -o "$tmpdir"/mkinitcpio/install/clevis
 curl -s --url "$urlforcurl/mkinitcpio/install/clevis-secret" -o "$tmpdir"/mkinitcpio/install/clevis-secret
 curl -s --url "$urlforcurl/mkinitcpio/install/dropbear" -o "$tmpdir"/mkinitcpio/install/dropbear
+curl -s --url "$urlforcurl/mkinitcpio/install/plymouth-zfs" -o "$tmpdir"/mkinitcpio/install/plymouth-zfs
 
 # Get ZFS module on ISO
 print "Getting ZFS Module"
@@ -472,10 +474,10 @@ sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/keys/secret.jwe)" >> /mnt/etc/mkinitcpio.conf
 if [[ -n "$SWAPRESUME" ]]; then
-    echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis encrypt resume clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+    echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis plymouth-encrypt resume clevis-secret plymouth-zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
     CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP nowatchdog"
 else
-    echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis-secret zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+    echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis-secret plymouth-zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
     CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog"
 fi
 echo "$CMDLINE" > /mnt/etc/kernel/cmdline
@@ -497,7 +499,7 @@ default_uki="/efi/EFI/Linux/archlinux-$i.efi"
 default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp"
 
 #fallback_config="/etc/mkinitcpio.conf"
-fallback_image="/boot/initramfs-linux-$i.img"
+fallback_image="/boot/initramfs-$i-fallback.img"
 fallback_uki="/efi/EFI/Linux/archlinux-$i-fallback.efi"
 fallback_options="-S autodetect --splash /usr/share/systemd/bootctl/splash-arch.bmp"
 EOF
@@ -526,6 +528,8 @@ print "Getting Clevis-Secret Hook"
 mkdir -p /mnt/etc/initcpio/{hooks,install}
 cp "$tmpdir"/mkinitcpio/hooks/clevis-secret /mnt/etc/initcpio/hooks/clevis-secret
 cp "$tmpdir"/mkinitcpio/install/clevis-secret /mnt/etc/initcpio/install/clevis-secret
+cp "$tmpdir"/mkinitcpio/hooks/plymouth-zfs /mnt/etc/initcpio/hooks/plymouth-zfs
+cp "$tmpdir"/mkinitcpio/install/plymouth-zfs /mnt/etc/initcpio/install/plymouth-zfs
 
 if [[ -n $SWAPRESUME ]]; then
       mkswap -q "$SWAP"
@@ -574,6 +578,8 @@ echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
 # Chroot!
 print "Chroot into System"
 arch-chroot /mnt /bin/bash -xe << EOF
+chmod 700 /root
+chmod 600 /keys
 clevis-encrypt-tpm2 '{}' < /keys/zroot.key > /keys/secret.jwe
 shred /keys/zroot.key
 rm /keys/zroot.key
@@ -721,6 +727,7 @@ editor no
 EOF
   fi
 
+print "Making Pacman Hooks"
 mkdir -p /mnt/etc/pacman.d/hooks
 cat > /mnt/etc/pacman.d/hooks/95-systemd-boot.hook << "EOF"
 [Trigger]
@@ -732,6 +739,34 @@ Target = systemd
 Description = Gracefully upgrading systemd-boot...
 When = PostTransaction
 Exec = /usr/bin/systemctl restart systemd-boot-update.service
+EOF
+
+cat > /mnt/usr/local/bin/ucode-zfsbootmenu << "EOF"
+#!/bin/sh
+
+EOF
+
+for i in "${LINUXARRAY[@]}"
+do
+cat >> /mnt/usr/local/bin/ucode-zfsbootmenu << EOF
+cp /boot/initramfs-$i.img /boot/initramfs-$i-nomc.img
+cat /boot/intel-ucode.img /boot/initramfs-$i-nomc.img > /boot/initramfs-$i.img
+EOF
+done
+chmod +x /mnt/usr/local/bin/ucode-zfsbootmenu
+cat > /mnt/etc/pacman.d/hooks/91-ucode-zfsbootmenu << "EOF"
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/lib/modules/*/vmlinuz
+Target = usr/lib/initcpio/*
+
+[Action]
+Description = Adding microcode to initramfs for ZFSBootMenu...
+When = PostTransaction
+Exec = /usr/local/bin/ucode-zfsbootmenu
+NeedsTargets
 EOF
 
 print "Cleanup AUR Builder"
