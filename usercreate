@@ -74,8 +74,11 @@ rm "$CHUSERPASS"
 
 print "Create Encrypted Dataset"
 if [[ -n "$NEWZFS" ]]; then
-  zfs create -o encryption=on -o keyformat=passphrase -o keylocation=prompt -o canmount=noauto zroot/data/home/"$USERNAME"
-  zfs load-key zroot/data/home/"$USERNAME" < "$USERPASS"
+  zfs create  -o encryption=on \
+              -o keyformat=passphrase \
+              -o keylocation=prompt \
+              -o canmount=noauto \
+              zroot/data/home/"$USERNAME" < "$USERPASS"
   zfs mount zroot/data/home/"$USERNAME"
   shred "$USERPASS"
   rm "$USERPASS"
@@ -89,7 +92,7 @@ chmod 0700 /home/"$USERNAME"
 UNITNAME="$(systemd-escape home/$USERNAME)"
 
 print "Create Systemd Units."
-UID=$(grep "$USERNAME:x" /etc/passwd | cut -d \: -f 3)
+USERID=$(grep "$USERNAME:x" /etc/passwd | cut -d \: -f 3)
 
 mkdir /etc/systemd/system/"$UNITNAME".mount.d/
 cat > /etc/systemd/system/"$UNITNAME".mount.d/override.conf << EOF
@@ -97,8 +100,8 @@ cat > /etc/systemd/system/"$UNITNAME".mount.d/override.conf << EOF
 Before=
 After=
 BindsTo=
-Before=user@"$UID".service
-BindsTo=user@"$UID".service
+Before=user@"$USERID".service
+BindsTo=user@"$USERID".service
 EOF
 
 cat > /etc/systemd/system/"$UNITNAME".automount << EOF
@@ -110,12 +113,12 @@ Where=/home/"$USERNAME"
 TimeoutIdleSec=5
 
 [Install]
-WantedBy=user@"$UID".service
+WantedBy=user@"$USERID".service
 EOF
   cat > /etc/systemd/system/zfs-unload-"$USERNAME".service << EOF
 [Unit]
 Description=Unload Key after session Ends for $USERNAME if pam_zfs_key fails to do so.
-BindsTo=user@"$UID".service
+BindsTo=user@"$USERID".service
 Requires=$(systemd-escape home/"$USERNAME").mount
 Before=$(systemd-escape home/"$USERNAME").mount
 Conflicts=umount.target
@@ -128,7 +131,7 @@ TimeoutSec=0
 ExecStop=-/usr/bin/zfs unload-key zroot/data/home/"$USERNAME"
 
 [Install]
-WantedBy=user@"$UID".service
+WantedBy=user@"$USERID".service
 EOF
 
 print "Enable Systemd Units."
