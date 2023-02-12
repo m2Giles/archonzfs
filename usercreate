@@ -45,13 +45,13 @@ print "Create User with Encrypted Home Script."
     ask "Name of Privileged User you would like to create?"
     USERNAME=$REPLY
     passask "Password and Encryption Key for Privileged User" "$USERPASS"
-    awk "{ print $USERNAME: $0 }" "$USERPASS" > "$CHUSERPASS"
+    echo "$USERNAME:$(cat $USERPASS)" > "$CHUSERPASS"
     PRIVILEGED=1
 else
     ask "Name of Unprivileged User you would like to create?"
     USERNAME=$REPLY
     passask "Password and Encryption Key for Privileged User" "$USERPASS"
-    awk "{ print $USERNAME: $0 }" "$USERPASS" > "$CHUSERPASS"
+    echo "$USERNAME:$(cat $USERPASS)" > "$CHUSERPASS"
 fi
 
 id -u "$USERNAME" &>/dev/null || NEWUSER=1
