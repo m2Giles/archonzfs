@@ -1,0 +1,800 @@
+#!/bin/bash
+
+set -e
+
+# Source a Configuration File if provided
+# Variables Needed for Automatic
+#   $EFI Partition for target EFI system Partition.
+#   $ZFS Partition for target zfs install location.
+#   $LINUXARRAY for array of Linux Kernels to Install.
+#   $HOSTNAMEINSTALL for hostname of install.
+#   $NOCHANGEDEFAULT Boot Option to Keep Default Boot Option
+#   $SECUREBOOT 0 to skip. 1 to make and enroll keys if in setup mode.
+#   $UMOUNT to umount and export after installation.
+#   $AUTOREBOOT to autoreboot following installation.
+#   $NOCREATEUSER Do Not Create a User
+# Make sure keys are Defined
+#  $ZFSKEY -- ZFS Encryption Key
+#  $ROOTKEY -- Root's Password
+# Optional Variables:
+#   $DEFAULTBOOT default boot option.
+#   $SWAPPART Partition for target Swap Partition (Require PARTLABEL=SWAP)
+#   $SWAPRESUME for Hibernation Resume (Requires Swap > Memory)
+#   $SWAPKEY for Hibernation Resume Key
+#   $SSHKEY -- Public Key for Remote Login to ZFSBootMenu
+# Keys are Files with the passphrase/password inside them.
+# Secureboot/Change Default Boot Option requires manual confirmation if set to 1. Set to 0 to skip.
+#
+if [[ -f $1 ]]; then
+set -a
+. "$1"
+set +a
+fi
+
+ask () {
+    read -p "> $1 " -r
+    echo
+}
+
+passask () {
+    while true; do
+      echo
+      echo "> $1"
+      read -r -s PASS1
+      echo
+      echo "> Verify $1"
+      read -r -s PASS2
+      echo
+      [ "$PASS1" = "$PASS2" ] && break || echo "Passwords do not Match. Please try again."
+    done
+    echo -n "$PASS2" > "$2"
+    chmod 000 "$2"
+    print "$1 can be reviewed at $2 prior to reboot"
+    unset PASS1
+    unset PASS2
+}
+
+umountandexport () {
+    print "Umount all partitions"
+    umount /mnt/efi
+    zfs umount -a
+    umount -R /mnt
+    print "Export zpool"
+    zpool export zroot
+}
+
+kernelselect () {
+    select ENTRY in $(cat /tmp/listkernels);
+      do
+        echo "Adding $ENTRY kernel to installation"
+        LINUXARRAY+=( "$ENTRY" )
+        echo "Current Kernel's to be installed ${LINUXARRAY[*]}"
+        if [[ $ENTRY = linux ]]; then
+          sed -i "1d" /tmp/listkernels
+        else
+          sed -i "/$ENTRY/d" /tmp/listkernels
+        fi
+        (( --count ))
+        while (( count > 0 )); do
+          ask "Are you done selecting kernels?"
+          if [[ $REPLY =~ ^[Yy]$ ]]; then
+            count=0
+            break
+          fi
+            kernelselect
+        done
+        break
+      done
+}
+
+print () {
+    echo -e "\n\033[1m> $1\033[0m\n"
+}
+
+# Get Scripts and Stuff into Place
+tmpdir=/tmp/archonzfs
+mkdir -p /tmp/archonzfs/mkinitcpio/{hooks,install}
+urlforcurl=https://raw.githubusercontent.com/m2Giles/archonzfs/master
+curl -s --url "$urlforcurl/mkinitcpio/hooks/dropbear" -o "$tmpdir"/mkinitcpio/hooks/dropbear
+curl -s --url "$urlforcurl/mkinitcpio/hooks/plymouth-zfs" -o "$tmpdir"/mkinitcpio/hooks/plymouth-zfs
+curl -s --url "$urlforcurl/mkinitcpio/install/dropbear" -o "$tmpdir"/mkinitcpio/install/dropbear
+curl -s --url "$urlforcurl/mkinitcpio/install/plymouth-zfs" -o "$tmpdir"/mkinitcpio/install/plymouth-zfs
+
+# Get ZFS module on ISO
+print "Getting ZFS Module"
+curl -s https://raw.githubusercontent.com/eoli3n/archiso-zfs/master/init | bash
+
+# Partition Drive
+if [[ -z $EFI && -z $ZFS ]]; then
+print "Choose Drive"
+select ENTRY in $(ls /dev/disk/by-id);
+do
+  DISK="/dev/disk/by-id/$ENTRY"
+  echo "$DISK" > /tmp/disk
+  echo "Installing on $ENTRY"
+  break
+done
+
+ask "Do you want to repartition $DISK?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+  echo "Partitioning Drive"
+  # EFI Partition
+  sgdisk -Zo "$DISK"
+  while true; do
+    ask "Size of EFI Partition in [MiB]? Minimum is 512 MiB:"
+    if (( "$REPLY" >= 512 )); then break; else print "Oops. Too small, $REPLY is less than minimum is 512 [MiB]"; fi
+  done
+  sgdisk -n1:1M:+"$REPLY"M -t1:EF00 -c1:EFI "$DISK"
+  EFI="$DISK-part1"
+
+  ask "Do you want a Swap Partition?"
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        ask "Size of Swap Partition in [GiB]?"
+          sgdisk -n2:0:+"$REPLY"G -t2:8200 -c2:SWAP "$DISK"
+          SWAPPART="$DISK-part2"
+      fi
+
+# ZFS Partition
+sgdisk -n3:0:0 -t3:BF00 -c3:ZFS "$DISK"
+ZFS="$DISK-part3"
+
+# notify Kernel
+partprobe "$DISK"
+
+# Format EFI Partition
+sleep 1
+echo "Formatting EFI Partition"
+mkfs.vfat -F32 "$EFI"
+  fi
+fi
+if [[ -z "$EFI" ]]; then
+  print "Select EFI Partition"
+  select ENTRY in $(ls "$DISK"-part*);
+  do
+    print "Reusing $ENTRY as EFI partition"
+    echo "This does not change partition"
+    EFI=$ENTRY
+    break
+  done
+fi
+if [[ -z "$ZFS" ]]; then
+  print "Select ZFS Root Partition"
+  select ENTRY in $(ls "$DISK"-part*);
+  do
+    print "Reusing $ENTRY as ZFS Root partition"
+    echo "This does not change partition"
+    ZFS=$ENTRY
+    break
+  done
+fi
+if [[ -z $SWAPPART ]]; then
+  if (( "$( find "$DISK"-* | wc -l )" > 2 )); then
+  ask "Do you have a Swap Partition? Requires PARTLABEL = SWAP."
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      select ENTRY in $(ls "$DISK"-part*);
+      do
+        print "Reusing $ENTRY as Swap partition"
+        SWAPPART=$ENTRY
+        echo "Not Checking PARTLABEL = SWAP."
+        echo "This does not change partition settings"
+        break
+      done
+    fi
+  fi
+fi
+
+# Set ZFS passphrase
+if [[ ! -f $ZFSKEY ]]; then
+ZFSKEY=/etc/zfs/zroot.key
+print "Set ZFS passphrase for Encrypted Datasets"
+passask "ZFS Passphrase" "$ZFSKEY"
+elif [[ $ZFSKEY != /etc/zfs/zroot.key ]]; then
+cat "$ZFSKEY" > /etc/zfs/zroot.key
+ZFSKEY=/etc/zfs/zroot.key
+fi
+
+# Set Root Account Password
+if [[ ! -f $ROOTKEY ]]; then
+ROOTKEY=/tmp/root.key
+print "Set Root Account Password for new Installtion"
+passask "Root Password" "/tmp/root.key"
+fi
+awk '{ print "root:" $0 }' "$ROOTKEY" > /tmp/root-chpasswd.key
+
+if [[ -z "$HOSTNAMEINSTALL" ]]; then
+ask "Please enter hostname for Installation:"
+HOSTNAMEINSTALL="$REPLY"
+fi
+
+if [[ -z "${LINUXARRAY[*]}" ]]; then
+LINUXARRAY=(linux-lts)
+ask "Do you wish to install additional kernel's? Default Kernel is Linux-lts."
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    cat > /tmp/listkernels << EOF
+    linux
+    linux-zen
+    linux-hardened
+EOF
+count=$(wc -l < /tmp/listkernels)
+kernelselect
+  fi
+fi
+LINUXARRAYHEADERS=( "${LINUXARRAY[@]/%/-headers}" )
+
+if [[ ! -f "$SSHKEY" && -z "$ZFSREMOTE" ]]; then
+ask "Do you want to have SSH Access (Remote) to ZFSBootMenu?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    ZFSREMOTE=1
+    if [[ ! -f "$SSHKEY" ]]; then
+    ask "Do you have an SSH Public Key you wish to upload now?"
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        ask "What is the full path to the SSH Public Key?"
+        SSHKEY=$REPLY
+        while [ ! -f "$SSHKEY" ];
+        do
+        if [ ! -f "$SSHKEY" ]; then
+           ask "$SSHKEY does not exist. Would you like to try again?"
+           if [[ $REPLY =~ ^[Yy]$ ]]; then
+             ask "What is the full path to the SSH Public Key?"
+             SSHKEY=$REPLY
+           else
+             break
+           fi
+        else
+          break
+        fi
+        done
+      fi
+    fi
+  fi
+elif [[ -f "$SSHKEY" ]]; then
+  ZFSREMOTE=1
+fi
+
+
+DEFAULTBOOT=zfsbootmenu.conf
+
+if [[ -z "$SECUREBOOT" ]]; then
+ask "Would you like to sign EFI executables and enroll keys for Secureboot Support during Installation?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    SECUREBOOT=1
+  fi
+fi
+
+if [[ -z "$UMOUNT" ]]; then
+ask "Do you want to unmount all partitions and export zpool following Installation?"
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    UMOUNT=1
+  fi
+fi
+
+if [[ -z "$AUTOREBOOT" ]]; then
+  if [[ -n $UMOUNT ]]; then
+    ask "Do you want to reboot automatically following Installation?"
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        AUTOREBOOT=1
+      fi
+  fi
+fi
+
+if [[ -n "$AUTOREBOOT" && -z "$UMOUNT" ]]; then
+  print "Autoreboot set, but unmount and export not set."
+  ask "Do you wish to unset Autoreboot?"
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        unset AUTOREBOOT
+      else
+        ask "Do you want to unmount all partitions and export zpool following Installation?"
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+          UMOUNT=1
+        else
+          echo "Unsetting Autoreboot."
+          unset AUTOREBOOT
+        fi
+      fi
+fi
+
+#Generate zfs hostid
+print "Generate Hostid for ZFS"
+zgenhostid -f "$(hostid)"
+
+# Create ZFS pool
+print "Create ZFS Pool"
+zpool create -f -o ashift=12              \
+                -o autotrim=on            \
+                -O acltype=posixacl       \
+                -O relatime=on            \
+                -O xattr=sa               \
+                -O dnodesize=legacy       \
+                -O normalization=formD    \
+                -O mountpoint=none        \
+                -O canmount=off           \
+                -R /mnt                   \
+                -O compression=lz4        \
+                -O encryption=aes-256-gcm \
+                -O keyformat=passphrase   \
+                -O keylocation=file://"$ZFSKEY"     \
+                zroot "$ZFS"
+
+# Build Dataset Tree
+print "Create Root Dataset"
+zfs create -o mountpoint=none zroot/ROOT
+zfs create -o mountpoint=/ -o canmount=noauto zroot/ROOT/arch
+print "Create Data Datasets"
+zfs create -o mountpoint=none zroot/data
+zfs create -o mountpoint=/home zroot/data/home
+zfs create -o mountpoint=/root zroot/data/home/root
+print "Create System Datasets"
+zfs create -o mountpoint=/var -o canmount=off zroot/var
+zfs create zroot/var/log
+zfs create -o mountpoint=/var/lib -o canmount=off zroot/var/lib
+zfs create zroot/var/lib/libvirt
+zfs create zroot/var/lib/lxd
+
+# Export and Reimport Pools
+print "Export and Reimport Pools, mount partitions"
+zpool export zroot
+zpool import -d /dev/disk/by-id -R /mnt zroot -N
+zfs load-key zroot
+zfs mount zroot/ROOT/arch
+zfs mount -a
+mkdir -p /mnt/efi
+mount "$EFI" /mnt/efi
+mkdir -p /mnt/efi/EFI/Linux
+
+#Set Bootfs
+print "Set ZFS bootfs"
+zpool set bootfs=zroot/ROOT/arch zroot
+
+#Zpool Cache
+print "Create zpool cachefile"
+mkdir -p /mnt/etc/zfs
+zpool set cachefile=/etc/zfs/zpool.cache zroot
+cp /etc/zfs/zpool.cache /mnt/etc/zfs/
+
+# Sort Mirrors
+print "Sorting Fastest Mirrors in US"
+echo "--country US" >> /etc/xdg/reflector/reflector.conf
+systemctl start reflector
+
+print "Configure Pacman for Color and Parallel Downloads"
+sed -i 's/#\(Color\)/\1/' /etc/pacman.conf
+sed -i "/Color/a\\ILoveCandy" /etc/pacman.conf
+sed -i 's/#\(Parallel\)/\1/' /etc/pacman.conf
+
+# Install
+print "Pacstrap"
+pacstrap /mnt "${LINUXARRAY[@]}" \
+      "${LINUXARRAYHEADERS[@]}" \
+      base              \
+      base-devel        \
+      linux-firmware    \
+      intel-ucode       \
+      neovim            \
+      git               \
+      reflector         \
+      networkmanager    \
+      openssh           \
+      bash-completion   \
+      arch-install-scripts \
+      systemd-resolvconf
+
+# Mask mkinitcpio Hook to Speed up installs
+print "Move mkinitcpio pacman Hooks to speed up installs"
+mv /mnt/usr/share/libalpm/hooks/60-mkinitcpio-remove.hook /mnt/60-mkinitcpio-remove.hook
+mv /mnt/usr/share/libalpm/hooks/90-mkinitcpio-install.hook /mnt/90-mkinitcpio-install.hook
+
+print "Configure Pacman for Color and Parallel Downloads"
+sed -i 's/#\(Color\)/\1/' /mnt/etc/pacman.conf
+sed -i "/Color/a\\ILoveCandy" /mnt/etc/pacman.conf
+sed -i 's/#\(Parallel\)/\1/' /mnt/etc/pacman.conf
+
+# Copy Reflector Over
+print "Copy Reflector Configuration"
+cp /etc/xdg/reflector/reflector.conf /mnt/etc/xdg/reflector/reflector.conf
+# FSTAB
+print "Generate /etc/fstab and remove ZFS entries"
+genfstab -U /mnt | grep -v "zroot" | tr -s '\n' | sed 's/\/mnt//'  > /mnt/etc/fstab
+
+# Set Hostname and configure /etc/hosts
+echo "$HOSTNAMEINSTALL" > /mnt/etc/hostname
+cat > /mnt/etc/hosts <<EOF
+#<ip-address> <hostname.domaing.org>  <hostname>
+127.0.0.1 localhost $HOSTNAMEINSTALL
+::1       localhost $HOSTNAMEINSTALL
+EOF
+
+# Set and Prepare Locales
+echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
+sed -i 's/#\(en_US.UTF-8\)/\1/' /mnt/etc/locale.gen
+
+# mkinitcpio
+print "mkinitcpio UKI configuration"
+sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
+sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
+echo "FILES=(/etc/zfs/zroot.key)" >> /mnt/etc/mkinitcpio.conf
+echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block plymouth-zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
+CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog"
+fi
+echo "$CMDLINE" > /mnt/etc/kernel/cmdline
+
+for i in "${LINUXARRAY[@]}"
+do
+cat > /mnt/etc/mkinitcpio.d/"$i".preset <<EOF
+# mkinitcpio preset file for the \'$i\' package
+
+ALL_config="/etc/mkinitcpio.conf"
+ALL_kver="/boot/vmlinuz-$i"
+ALL_microcode="/boot/intel-ucode.img"
+
+PRESETS=('default' 'fallback')
+
+#default_config="/etc/mkinitcpio.conf"
+default_image="/boot/initramfs-$i.img"
+
+#fallback_config="/etc/mkinitcpio.conf"
+fallback_image="/boot/initramfs-$i-fallback.img"
+fallback_options="-S autodetect"
+EOF
+done
+
+# Copy ZFS files
+print "Copy ZFS files"
+cp /etc/hostid /mnt/etc/hostid
+cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache
+mkdir /mnt/keys
+cp "$ZFSKEY" /mnt/keys/zroot.key
+
+# Systemd Resolved
+ln -sf /run/systemd/resolve/stub-resolv.conf /mnt/etc/resolv.conf
+
+# Add archzfs repo
+cat >> /mnt/etc/pacman.conf << "EOF"
+[archzfs]
+Server = https://zxcvfdsa.com/archzfs/$repo/$arch
+Server = http://archzfs.com/$repo/$arch
+EOF
+
+# Clevis TPM unlock preparation & getting hook
+print "Plymouth ZFS"
+print "Getting Clevis-Secret Hook"
+cp "$tmpdir"/mkinitcpio/hooks/plymouth-zfs /mnt/etc/initcpio/hooks/plymouth-zfs
+cp "$tmpdir"/mkinitcpio/install/plymouth-zfs /mnt/etc/initcpio/install/plymouth-zfs
+
+if [[ -n $SWAPPART ]]; then
+  echo "swap PARTLABEL=SWAP /dev/urandom swap,cipher=aes-cbc-essiv:sha256,size=256" >> /mnt/etc/crypttab
+  echo "/dev/mapper/swap  none   swap    defaults   0       0" >> /mnt/etc/fstab
+fi
+
+print "make AUR builder"
+arch-chroot /mnt /bin/bash -xe << EOF
+useradd -m builder
+echo "builder ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/builder
+sed -i 's/#MAKEFLAGS=\"-j2\"/MAKEFLAGS=\"-j\$(nproc)\"/' /etc/makepkg.conf
+EOF
+
+print "Build Plymouth and configure"
+arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+git clone https://aur.archlinux.org/paru-bin
+cd /home/builder/paru-bin
+makepkg -si --noconfirm
+cd /home/builder
+paru -S plymouth-git --noconfirm
+EOF"
+
+cp /mnt/usr/share/plymouth/arch-logo.png /mnt/usr/share/plymouth/themes/spinner/watermark.png
+sed -i 's/.96/.5/' /mnt/usr/share/plymouth/themes/spinner/spinner.plymouth
+echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
+
+# Chroot!
+print "Chroot into System"
+arch-chroot /mnt /bin/bash -xe << EOF
+chmod 700 /root
+chmod 600 /keys
+pacman-key -r DDF7DB817396A49B2A2723F7403BD972F75D9D76
+pacman-key --lsign-key DDF7DB817396A49B2A2723F7403BD972F75D9D76
+pacman -Syu --noconfirm zfs-dkms zfs-utils rebuild-detector mlocate
+ln -sf /usr/share/zoneinfo/US/Eastern /etc/localtime
+hwclock --systohc
+locale-gen
+bootctl install
+mkdir -p /etc/zfs/zfs-list.cache
+mv /keys/zroot.key /etc/zfs/zroot.key
+touch /etc/zfs/zfs-list.cache/zroot
+zfs list -H -o name,mountpoint,canmount,atime,relatime,devices,exec,readonly,setuid,nbmand | sed 's/\/mnt//' > /etc/zfs/zfs-list.cache/zroot
+systemctl enable    \
+  NetworkManager    \
+  systemd-resolved  \
+  systemd-timesyncd \
+  reflector.timer   \
+  sshd              \
+  zfs-import-cache  \
+  zfs-mount         \
+  zfs-import.target \
+  zfs.target        \
+  zfs-zed           \
+  systemd-boot-update.service
+EOF
+
+print "SSH Configuration"
+mkdir /mnt/etc/ssh/sshd.d/
+echo "Include /etc/ssh/sshd.d/override.conf" >> /mnt/etc/ssh/sshd
+cat > /mnt/etc/ssh/sshd.d/override.conf << EOF
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys
+PasswordAuthentication yes
+EOF
+chmod 0644 /mnt/etc/ssh/sshd.d/override.conf
+
+print "Install ZFSBootMenu"
+if [[ "$ZFSREMOTE" = 1 || -f "$SSHKEY" ]]; then
+  arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+  paru -S mkinitcpio-netconf mkinitcpio-utils dropbear zfsbootmenu --noconfirm
+EOF"
+else
+  arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+  paru -S zfsbootmenu --noconfirm
+EOF"
+fi
+
+zfs set org.zfsbootmenu:commandline="$CMDLINE" zroot/ROOT
+zfs set org.zfsbootmenu:keysource="zroot/ROOT/arch" zroot
+
+print "Configure ZFSBootMenu"
+sed -i 's/BINARIES=/#BINARIES=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
+echo "BINARIES=(/usr/bin/arch-chroot)" >> /mnt/etc/zfsbootmenu/mkinitcpio.conf
+if [[ "$ZFSREMOTE" = 1 || -f "$SSHKEY" ]]; then
+  mkdir -p /mnt/etc/zfsbootmenu/initcpio/{hooks,install}
+  cp "$tmpdir"/mkinitcpio/hooks/dropbear /mnt/etc/zfsbootmenu/initcpio/hooks/dropbear
+  cp "$tmpdir"/mkinitcpio/install/dropbear /mnt/etc/zfsbootmenu/initcpio/install/dropbear
+  mkdir -p /mnt/etc/dropbear
+  arch-chroot /mnt /bin/bash -xe << "EOF"
+  for keytype in rsa ecdsa ed25519; do
+    dropbearkey -t "${keytype}" -f "/etc/dropbear/dropbear_${keytype}_host_key"
+  done
+  echo "dropbear_listen=2222" > /etc/dropbear/dropbear.conf
+EOF
+  if [[ -f "$SSHKEY" ]]; then
+    cp "$SSHKEY" /mnt/etc/dropbear/root_key
+  else
+    touch /mnt/etc/dropbear/root_key
+  fi
+  sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/zfsbootmenu/mkinitcpio.conf
+  echo "HOOKS=(base udev autodetect modconf block filesystems keyboard netconf dropbear zfsbootmenu)" >> /mnt/etc/zfsbootmenu/mkinitcpio.conf
+  cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
+  Global:
+    ManageImages: true
+    BootMountPoint: /efi
+    InitCPIO: true
+    InitCPIOConfig: /etc/zfsbootmenu/mkinitcpio.conf
+    InitCPIOHookDirs:
+      - /etc/zfsbootmenu/initcpio
+      - /usr/lib/initcpio
+  EFI:
+    ImageDir: /efi/EFI/zbm
+    Versions: false
+    Enabled: true
+  Kernel:
+    CommandLine: ro quiet loglevel=0 ip=dhcp zbm.show
+    Path: /boot/vmlinuz-linux-lts
+    Prefix: zfsbootmenu
+EOF
+  if [[ ! -f "$SSHKEY" ]]; then
+    print "Be sure to copy in ssh publickeys to /etc/dropbear/root_key for SSH access\n Dropbear will listen on port 2222 and use DHCP by default with this setup"
+  fi
+else
+  cat > /mnt/etc/zfsbootmenu/config.yaml <<"EOF"
+  Global:
+    ManageImages: true
+    BootMountPoint: /efi
+    InitCPIO: true
+    InitCPIOConfig: /etc/zfsbootmenu/mkinitcpio.conf
+    InitCPIOHookDirs:
+      - /etc/zfsbootmenu/initcpio
+      - /usr/lib/initcpio
+  EFI:
+    ImageDir: /efi/EFI/zbm
+    Versions: false
+    Enabled: true
+  Kernel:
+    CommandLine: ro quiet loglevel=0 zbm.show
+    Path: /boot/vmlinuz-linux-lts
+    Prefix: zfsbootmenu
+EOF
+fi
+
+print "Generate ZFSBootMenu and Restore mkinitcpio pacman hooks"
+
+mv /mnt/60-mkinitcpio-remove.hook /mnt/usr/share/libalpm/hooks/60-mkinitcpio-remove.hook
+mv /mnt/90-mkinitcpio-install.hook /mnt/usr/share/libalpm/hooks/90-mkinitcpio-install.hook
+arch-chroot /mnt /bin/mkinitcpio -P
+arch-chroot /mnt /bin/generate-zbm
+arch-chroot /mnt /bin/generate-zbm
+cat > /mnt/efi/loader/entries/zfsbootmenu.conf <<"EOF"
+title ZFSBootMenu
+efi   /EFI/zbm/zfsbootmenu.EFI
+EOF
+cat > /mnt/efi/loader/entries/zfsbootmenu-backup.conf <<"EOF"
+title ZFSBootMenu (Backup)
+efi   /EFI/zbm/zfsbootmenu-backup.EFI
+EOF
+if [[ -n "$DEFAULTBOOT" ]]; then
+  print "Setting $DEFAULTBOOT as the Default Boot Option."
+  cat > /mnt/efi/loader/loader.conf <<EOF
+default $DEFAULTBOOT
+#timeout 3
+console-mode max
+editor no
+EOF
+else
+  print "Setting archlinux-linux-lts.efi as Default Boot Option."
+  cat > /mnt/efi/loader/loader.conf <<"EOF"
+default archlinux-linux-lts.efi
+#timeout 3
+console-mode max
+editor no
+EOF
+  fi
+
+print "Making Pacman Hooks"
+mkdir -p /mnt/etc/pacman.d/hooks
+cat > /mnt/etc/pacman.d/hooks/95-systemd-boot.hook << "EOF"
+[Trigger]
+Type = Package
+Operation = Upgrade
+Target = systemd
+
+[Action]
+Description = Gracefully upgrading systemd-boot...
+When = PostTransaction
+Exec = /usr/bin/systemctl restart systemd-boot-update.service
+EOF
+
+cat > /mnt/usr/local/bin/ucode-zfsbootmenu << "EOF"
+#!/bin/sh
+
+EOF
+
+for i in "${LINUXARRAY[@]}"
+do
+cat >> /mnt/usr/local/bin/ucode-zfsbootmenu << EOF
+cp /boot/initramfs-$i.img /boot/initramfs-$i-nomc.img
+cat /boot/intel-ucode.img /boot/initramfs-$i-nomc.img > /boot/initramfs-$i.img
+EOF
+done
+chmod +x /mnt/usr/local/bin/ucode-zfsbootmenu
+cat > /mnt/etc/pacman.d/hooks/91-ucode-zfsbootmenu << "EOF"
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/lib/modules/*/vmlinuz
+Target = usr/lib/initcpio/*
+
+[Action]
+Description = Adding microcode to initramfs for ZFSBootMenu...
+When = PostTransaction
+Exec = /usr/local/bin/ucode-zfsbootmenu
+NeedsTargets
+EOF
+
+print "Cleanup AUR Builder"
+arch-chroot /mnt /bin/bash -xe << EOF
+userdel builder
+rm /etc/sudoers.d/builder
+rm -rf /home/builder
+EOF
+
+print "PAM Modules for ZFS encrypted Homes"
+cat > /mnt/etc/pam.d/system-login << "EOF"
+#%PAM-1.0
+
+auth       required   pam_shells.so
+auth       requisite  pam_nologin.so
+auth       optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key create
+auth       include    system-auth
+
+account    required   pam_access.so
+account    required   pam_nologin.so
+account    include    system-auth
+
+password   optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+password   include    system-auth
+
+session    optional   pam_loginuid.so
+session    optional   pam_keyinit.so       force revoke
+session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
+session    optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+session    include    system-auth
+session    optional   pam_motd.so
+session    optional   pam_mail.so          dir=/var/spool/mail standard quiet
+-session   optional   pam_systemd.so
+session    required   pam_env.so
+EOF
+
+cat > /mnt/etc/pam.d/su-l << "EOF"
+#%PAM-1.0
+auth            sufficient      pam_rootok.so
+# Uncomment the following line to implicitly trust users in the "wheel" group.
+#auth           sufficient      pam_wheel.so trust use_uid
+# Uncomment the following line to require a user to be in the "wheel" group.
+#auth           required        pam_wheel.so use_uid
+auth            required        pam_unix.so
+auth            optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+account         required        pam_unix.so
+session	        required        pam_unix.so
+session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
+session         optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+password        optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+password        include         system-auth
+EOF
+
+# Set root passwd
+print "Setting Root Account Password"
+chpasswd --root /mnt/ < /tmp/root-chpasswd.key
+
+if [[ $SECUREBOOT = 1 ]]; then
+    print "Must have Secureboot in Setup Mode"
+    pacman -S sbctl --noconfirm
+    SETUPMODE=$(sbctl status | grep Setup | awk '{ print $4 }')
+      if [[ $SETUPMODE = Enabled ]]; then
+          print "Generatng and Enrolling Keys with Microsoft Keys"
+          arch-chroot /mnt /bin/bash -xe << EOF
+          pacman -Syu sbctl --noconfirm
+          sbctl create-keys
+          sbctl enroll-keys --microsoft
+          sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
+          sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
+          sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
+          sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+          sbctl status
+EOF
+          SECUREBOOTENABLED=1
+        else
+          print "Enroll Keys on a later boot when in setup mode"
+          arch-chroot /mnt /bin/bash -xe << EOF
+          pacman -Syu sbctl --noconfirm
+          sbctl create-keys
+          sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
+          sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
+          sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
+          sbctl sign -s /efi/EFI/zbm/zfsbootmenu-backup.EFI
+          sbctl status
+EOF
+      fi
+fi
+
+if [[ -n "$SECUREBOOTENABLED" && -n "$RESUME" ]]; then
+  print "Bind LUKs Key and ZFS passphrase to Secureboot state on a later boot."
+elif [[ -n "$SECUREBOOTENABLED" ]]; then
+  print "Bind ZFS passphrase to Secureboot state on a later boot."
+fi
+
+print "Make Install Snapshot"
+zfs snapshot zroot/ROOT/arch@install
+
+if [[ -n "$UMOUNT" ]]; then
+  umountandexport
+  else
+    ask "Do you want to unmount all partitions and export zpool?"
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        umountandexport
+      else
+        print "Be sure to unmount all partitions and export zpool before rebooting"
+      fi
+  fi
+
+echo -e "\e[32mAll OK"
+
+if [[ -n "$AUTOREBOOT" ]]; then
+  count=5
+  print "System will reboot automatically in $count Seconds. Cancel with CTRL+C"
+  (( ++count ))
+  while (( --count > 0 )); do
+    echo "Reboot in $count Seconds"
+    sleep 1
+  done
+  echo "Rebooting System"
+  sleep 1
+  reboot
+fi
