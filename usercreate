@@ -37,6 +37,25 @@ print () {
     echo -e "\n\033[1m> $1\033[0m\n"
 }
 
+print "PAM Modules for ZFS encrypted Homes"
+if grep -q pam_zfs_key /etc/pam.d/system-login; then
+cat >> /mnt/etc/pam.d/system-login << "EOF"
+auth       optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key create
+password   optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
+session    optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+EOF
+fi
+
+if grep -q pam_zfs_key /etc/pam.d/su-l; then
+cat >> /mnt/etc/pam.d/su-l << "EOF"
+auth            optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
+session         optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+password        optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+EOF
+fi
+
 print "Create User with Encrypted Home Script."
   USERPASS=/tmp/zfs-home.key
   CHUSERPASS=/tmp/user-chpasswd.key

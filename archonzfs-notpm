@@ -413,8 +413,8 @@ sed -i 's/HOOKS=/#HOOKS=/' /mnt/etc/mkinitcpio.conf
 sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/etc/zfs/zroot.key)" >> /mnt/etc/mkinitcpio.conf
 echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block plymouth-zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
-CMDLINE="rw zfs=auto quiet udev.log_level=3 splash bgrt_disable nowatchdog"
-fi
+CMDLINE="rw zfs=zroot/ROOT/arch quiet udev.log_level=3 splash bgrt_disable nowatchdog"
+ZBMCMDLINE="rw quiet udev.log_level=3 splash bgrt_disable nowatchdog"
 echo "$CMDLINE" > /mnt/etc/kernel/cmdline
 
 for i in "${LINUXARRAY[@]}"
@@ -537,7 +537,7 @@ else
 EOF"
 fi
 
-zfs set org.zfsbootmenu:commandline="$CMDLINE" zroot/ROOT
+zfs set org.zfsbootmenu:commandline="$ZBMCMDLINE" zroot/ROOT/arch
 zfs set org.zfsbootmenu:keysource="zroot/ROOT/arch" zroot
 
 print "Configure ZFSBootMenu"
@@ -683,50 +683,6 @@ arch-chroot /mnt /bin/bash -xe << EOF
 userdel builder
 rm /etc/sudoers.d/builder
 rm -rf /home/builder
-EOF
-
-print "PAM Modules for ZFS encrypted Homes"
-cat > /mnt/etc/pam.d/system-login << "EOF"
-#%PAM-1.0
-
-auth       required   pam_shells.so
-auth       requisite  pam_nologin.so
-auth       optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key create
-auth       include    system-auth
-
-account    required   pam_access.so
-account    required   pam_nologin.so
-account    include    system-auth
-
-password   optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
-password   include    system-auth
-
-session    optional   pam_loginuid.so
-session    optional   pam_keyinit.so       force revoke
-session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
-session    optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
-session    include    system-auth
-session    optional   pam_motd.so
-session    optional   pam_mail.so          dir=/var/spool/mail standard quiet
--session   optional   pam_systemd.so
-session    required   pam_env.so
-EOF
-
-cat > /mnt/etc/pam.d/su-l << "EOF"
-#%PAM-1.0
-auth            sufficient      pam_rootok.so
-# Uncomment the following line to implicitly trust users in the "wheel" group.
-#auth           sufficient      pam_wheel.so trust use_uid
-# Uncomment the following line to require a user to be in the "wheel" group.
-#auth           required        pam_wheel.so use_uid
-auth            required        pam_unix.so
-auth            optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
-account         required        pam_unix.so
-session	        required        pam_unix.so
-session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
-session         optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
-password        optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
-password        include         system-auth
 EOF
 
 # Set root passwd
