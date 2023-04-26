@@ -229,12 +229,12 @@ fi
 
 # Set ZFS passphrase
 if [[ ! -f $ZFSKEY ]]; then
-ZFSKEY=/etc/zfs/zroot.key
-print "Set ZFS passphrase for Encrypted Datasets"
-passask "ZFS Passphrase" "$ZFSKEY"
+    ZFSKEY=/etc/zfs/zroot.key
+    print "Set ZFS passphrase for Encrypted Datasets"
+    passask "ZFS Passphrase" "$ZFSKEY"
 elif [[ $ZFSKEY != /etc/zfs/zroot.key ]]; then
-cat "$ZFSKEY" > /etc/zfs/zroot.key
-ZFSKEY=/etc/zfs/zroot.key
+    cat "$ZFSKEY" > /etc/zfs/zroot.key
+    ZFSKEY=/etc/zfs/zroot.key
 fi
 
 # Set Root Account Password
@@ -370,8 +370,8 @@ zpool create -f -o ashift=12              \
                 -O compression=lz4        \
                 -O encryption=aes-256-gcm \
                 -O keyformat=passphrase   \
-                -O keylocation=file://"$ZFSKEY"     \
-                zroot "$ZFS"
+                -O keylocation=file://${ZFSKEY}     \
+                zroot ${ZFS}
 
 # Build Dataset Tree
 print "Create Root Dataset"
@@ -435,6 +435,7 @@ pacstrap /mnt "${LINUXARRAY[@]}" \
       tpm2-tools        \
       openssh           \
       bash-completion   \
+      plymouth          \
       arch-install-scripts \
       systemd-resolvconf
 
@@ -474,12 +475,12 @@ sed -i 's/FILES=/#FILES=/' /mnt/etc/mkinitcpio.conf
 echo "FILES=(/keys/secret.jwe)" >> /mnt/etc/mkinitcpio.conf
 if [[ -n "$SWAPRESUME" ]]; then
     echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis plymouth-encrypt resume clevis-secret plymouth-zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
-    CMDLINE="rw zfs=zroot/ROOT/arch quiet udev.log_level=3 splash bgrt_disable cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP nowatchdog"
-    ZBMCMDLINE="rw quiet udev.log_level=3 splash bgrt_disable cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP nowatchdog"
+    CMDLINE="rw zfs=zroot/ROOT/arch splash quiet udev.log_level=3 systemd.show_status=yes cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP"
+    ZBMCMDLINE="rw splash quiet udev.log_level=3 systemd.show_status=yes cryptdevice=PARTLABEL=SWAP:swap:allow-discards resume=$SWAP"
 else
     echo "HOOKS=(base udev plymouth autodetect modconf kms keyboard block clevis-secret plymouth-zfs filesystems)" >> /mnt/etc/mkinitcpio.conf
-    CMDLINE="rw zfs=zroot/ROOT/arch quiet udev.log_level=3 splash bgrt_disable nowatchdog"
-    ZBMCMDLINE="rw quiet udev.log_level=3 splash bgrt_disable nowatchdog"
+    CMDLINE="rw zfs=zroot/ROOT/arch splash quiet udev.log_level=3 systemd.show_status=yes"
+    ZBMCMDLINE="rw splash quiet udev.log_level=3 systemd.show_status=yes"
 fi
 echo "$CMDLINE" > /mnt/etc/kernel/cmdline
 
@@ -562,19 +563,6 @@ useradd -m builder
 echo "builder ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/builder
 sed -i 's/#MAKEFLAGS=\"-j2\"/MAKEFLAGS=\"-j\$(nproc)\"/' /etc/makepkg.conf
 EOF
-
-print "Build Plymouth and configure"
-arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
-git clone https://aur.archlinux.org/paru-bin
-cd /home/builder/paru-bin
-makepkg -si --noconfirm
-cd /home/builder
-paru -S plymouth-git --noconfirm
-EOF"
-
-cp /mnt/usr/share/plymouth/arch-logo.png /mnt/usr/share/plymouth/themes/spinner/watermark.png
-sed -i 's/.96/.5/' /mnt/usr/share/plymouth/themes/spinner/spinner.plymouth
-echo "DeviceScale=1" >> /mnt/etc/plymouth/plymouthd.conf
 
 # Chroot!
 print "Chroot into System"
@@ -755,7 +743,7 @@ cat /boot/intel-ucode.img /boot/initramfs-$i-nomc.img > /boot/initramfs-$i.img
 EOF
 done
 chmod +x /mnt/usr/local/bin/ucode-zfsbootmenu
-cat > /mnt/etc/pacman.d/hooks/91-ucode-zfsbootmenu << "EOF"
+cat > /mnt/etc/pacman.d/hooks/91-ucode-zfsbootmenu.hook << "EOF"
 [Trigger]
 Type = Path
 Operation = Install

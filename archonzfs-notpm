@@ -663,7 +663,7 @@ cat /boot/intel-ucode.img /boot/initramfs-$i-nomc.img > /boot/initramfs-$i.img
 EOF
 done
 chmod +x /mnt/usr/local/bin/ucode-zfsbootmenu
-cat > /mnt/etc/pacman.d/hooks/91-ucode-zfsbootmenu << "EOF"
+cat > /mnt/etc/pacman.d/hooks/91-ucode-zfsbootmenu.hook << "EOF"
 [Trigger]
 Type = Path
 Operation = Install

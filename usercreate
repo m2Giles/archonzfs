@@ -36,25 +36,58 @@ passask () {
 print () {
     echo -e "\n\033[1m> $1\033[0m\n"
 }
-
-print "PAM Modules for ZFS encrypted Homes"
-if grep -q pam_zfs_key /etc/pam.d/system-login; then
-cat >> /mnt/etc/pam.d/system-login << "EOF"
-auth       optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key create
-password   optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
-session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
-session    optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+HOSTNAME=$(hostnamectl hostname || cat /etc/hostname)
+print "PAM Module for ZFS encrypted Homes"
+if ! grep -q /usr/local/bin/mount-zfs-homedir /etc/pam.d/system-login; then
+    cat >> /etc/pam.d/system-login << "EOF"
+-auth      optional   pam_exec.so          expose_authtok /usr/local/bin/mount-zfs-homedir
 EOF
 fi
 
-if grep -q pam_zfs_key /etc/pam.d/su-l; then
-cat >> /mnt/etc/pam.d/su-l << "EOF"
-auth            optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
-session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
-session         optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
-password        optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+if [ ! -f /usr/local/bin/mount-zfs-homedir ]; then
+    cat > /usr/local/bin/mount-zfs-homedir << EOF
+#!/bin/bash
+
+set -eu
+
+# Password is given to us via stdin, save it in a variable for later
+PASS=\$(cat -)
+
+# List all zfs volumes, listing the *local* value of the property canmount.
+zfs get canmount -s local -H -o name,value | while read volname canmount; do
+    # Filter on canmount == 'noauto'. Filesystems marked 'noauto' can be mounted,
+    # but is not done so automatically during boot.
+    [[ \$canmount = 'noauto' ]] || continue
+
+    # Filter on user property $HOSTNAME.automount:user. It should match
+    # the user that we are logging in as (\$PAM_USER)
+    user=\$(zfs get $HOSTNAME.automount:user -s local -H -o value $volname)
+    [[ \$user = \$PAM_USER ]] || continue
+
+    # Unlock and mount the volume
+    zfs load-key "\$volname" <<< "\$PASS" || continue
+    zfs mount "\$volname" || true # ignore erros
+done
 EOF
+chmod +x /usr/local/bin/mount-zfs-homedir
 fi
+# if grep -q pam_zfs_key /etc/pam.d/system-login; then
+# cat >> /mnt/etc/pam.d/system-login << "EOF"
+# auth       optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key create
+# password   optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+# session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
+# session    optional   pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+# EOF
+# fi
+#
+# if grep -q pam_zfs_key /etc/pam.d/su-l; then
+# cat >> /mnt/etc/pam.d/su-l << "EOF"
+# auth            optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+# session [success=1 default=ignore] pam_succeed_if.so service = systemd-user quiet
+# session         optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+# password        optional        pam_zfs_key.so homes=zroot/data/home runstatedir=/run/pam_zfs_key
+# EOF
+# fi
 
 print "Create User with Encrypted Home Script."
   USERPASS=/tmp/zfs-home.key
@@ -80,7 +113,8 @@ fi
 
 print "Create User."
 if [[ -n "$PRIVILEGED" && -n "$NEWUSER" ]]; then
-  id -u "$USERNAME" &>/dev/null || useradd -G wheel "$USERNAME"
+  id -u "$USERNAME" &>/dev/null || $(useradd -G wheel "$USERNAME" && \
+      echo "$USERNAME ALL=(ALL:ALL) ALL" > /etc/sudoers.d/$USERNAME)
 elif [[ -n "$NEWUSER" ]]; then
   id -u "$USERNAME" &>/dev/null || useradd "$USERNAME"
 else
@@ -97,49 +131,51 @@ if [[ -n "$NEWZFS" ]]; then
               -o keyformat=passphrase \
               -o keylocation=prompt \
               -o canmount=noauto \
-              zroot/data/home/"$USERNAME" < "$USERPASS"
-  zfs mount zroot/data/home/"$USERNAME"
-  shred "$USERPASS"
-  rm "$USERPASS"
+              zroot/data/home/$USERNAME < $USERPASS
+  zfs mount zroot/data/home/$USERNAME
+  shred $USERPASS
+  rm $USERPASS
+  zfs set $HOSTNAME.automount:user=$USERNAME zroot/data/home/$USERNAME
 else
   print "ZFS Dataset Already Exists"
   exit 2
 fi
 
-chown "$USERNAME":"$USERNAME" /home/"$USERNAME"
-chmod 0700 /home/"$USERNAME"
-UNITNAME="$(systemd-escape home/$USERNAME)"
+cp /etc/skel/.bash* /home/$USERNAME
+chown $USERNAME:$USERNAME -R /home/$USERNAME
+chmod 0700 /home/$USERNAME
+UNITNAME=$(systemd-escape home/$USERNAME)
 
 print "Create Systemd Units."
-USERID=$(grep "$USERNAME:x" /etc/passwd | cut -d \: -f 3)
+USERID=$(grep $USERNAME:x /etc/passwd | cut -d \: -f 3)
 
-mkdir /etc/systemd/system/"$UNITNAME".mount.d/
-cat > /etc/systemd/system/"$UNITNAME".mount.d/override.conf << EOF
+mkdir /etc/systemd/system/$UNITNAME.mount.d/
+cat > /etc/systemd/system/$UNITNAME.mount.d/override.conf << EOF
 [Unit]
 Before=
 After=
 BindsTo=
-Before=user@"$USERID".service
-BindsTo=user@"$USERID".service
+Before=user@$USERID.service
+BindsTo=user@$USERID.service
 EOF
 
-cat > /etc/systemd/system/"$UNITNAME".automount << EOF
+cat > /etc/systemd/system/$UNITNAME.automount << EOF
 [Unit]
-Description=Automount for zroot/data/home/"$USERNAME"
+Description=Automount for zroot/data/home/$USERNAME
 
 [Automount]
-Where=/home/"$USERNAME"
+Where=/home/$USERNAME
 TimeoutIdleSec=5
 
 [Install]
-WantedBy=user@"$USERID".service
+WantedBy=user@$USERID.service
 EOF
-  cat > /etc/systemd/system/zfs-unload-"$USERNAME".service << EOF
+  cat > /etc/systemd/system/zfs-unload-$UNITNAME.service << EOF
 [Unit]
-Description=Unload Key after session Ends for $USERNAME if pam_zfs_key fails to do so.
-BindsTo=user@"$USERID".service
-Requires=$(systemd-escape home/"$USERNAME").mount
-Before=$(systemd-escape home/"$USERNAME").mount
+Description=Unload Key after session ends for $USERNAME.
+BindsTo=user@$USERID.service
+Requires=$UNITNAME.mount
+Before=$UNITNAME.mount
 Conflicts=umount.target
 Before=umount.target
 
@@ -147,17 +183,19 @@ Before=umount.target
 Type=oneshot
 RemainAfterExit=yes
 TimeoutSec=0
-ExecStop=-/usr/bin/zfs unload-key zroot/data/home/"$USERNAME"
+ExecStop=-/usr/bin/zfs unload-key zroot/data/home/$USERNAME
 
 [Install]
-WantedBy=user@"$USERID".service
+WantedBy=user@$USERID.service
 EOF
 
 print "Enable Systemd Units."
 systemctl daemon-reload
-systemctl enable "$UNITNAME".automount
-systemctl enable zfs-unload-"$USERNAME".service
+systemctl enable $UNITNAME.automount
+systemctl enable zfs-unload-$UNITNAME.service
 
 print "Unmount and Unload Key for newly created Encrypted Home Directory."
-zfs umount zroot/data/home/"$USERNAME"
-zfs unload-key zroot/data/home/"$USERNAME"
+if systemctl is-active --quiet $UNITNAME.mount; then 
+	zfs umount zroot/data/home/$USERNAME
+fi
+zfs unload-key zroot/data/home/$USERNAME
