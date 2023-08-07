@@ -496,14 +496,14 @@ ALL_microcode="/boot/intel-ucode.img"
 PRESETS=('default' 'fallback')
 
 #default_config="/etc/mkinitcpio.conf"
-default_image="/boot/initramfs-$i.img"
+#default_image="/boot/initramfs-$i.img"
 default_uki="/efi/EFI/Linux/archlinux-$i.efi"
-default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp"
+#default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp"
 
 #fallback_config="/etc/mkinitcpio.conf"
-fallback_image="/boot/initramfs-$i-fallback.img"
-fallback_uki="/efi/EFI/Linux/archlinux-$i-fallback.efi"
-fallback_options="-S autodetect --splash /usr/share/systemd/bootctl/splash-arch.bmp"
+fallback_image="/boot/initramfs-$i.img"
+#fallback_uki="/efi/EFI/Linux/archlinux-$i-fallback.efi"
+fallback_options="-S autodetect"
 EOF
 done
 
@@ -564,6 +564,13 @@ echo "builder ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/builder
 sed -i 's/#MAKEFLAGS=\"-j2\"/MAKEFLAGS=\"-j\$(nproc)\"/' /etc/makepkg.conf
 EOF
 
+print "Install Paru"
+arch-chroot /mnt /usr/bin/su -l builder -c "/bin/bash -xe << EOF
+git clone https://aur.archlinux.org/paru-bin
+cd paru-bin
+makepkg -si --noconfirm
+EOF"
+
 # Chroot!
 print "Chroot into System"
 arch-chroot /mnt /bin/bash -xe << EOF
@@ -602,7 +609,6 @@ echo "Include /etc/ssh/sshd.d/override.conf" >> /mnt/etc/ssh/sshd
 cat > /mnt/etc/ssh/sshd.d/override.conf << EOF
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
-AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys
 PasswordAuthentication yes
 EOF
 chmod 0644 /mnt/etc/ssh/sshd.d/override.conf
@@ -779,14 +785,10 @@ if [[ $SECUREBOOT = 1 ]]; then
           pacman -Syu sbctl --noconfirm
           sbctl create-keys
           sbctl enroll-keys --microsoft
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened-fallback.efi
+          [[ -f /efi/EFI/Linux/archlinux-linux.efi ]] && sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
+          [[ -f /efi/EFI/Linux/archlinux-linux-lts.efi ]] && sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
+          [[ -f /efi/EFI/Linux/archlinux-linux-zen.efi ]] && sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen.efi
+          [[ -f /efi/EFI/Linux/archlinux-linux-hardened.efi ]] && sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened.efi
           sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
           sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
           sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
@@ -799,14 +801,10 @@ EOF
           arch-chroot /mnt /bin/bash -xe << EOF
           pacman -Syu sbctl --noconfirm
           sbctl create-keys
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen-fallback.efi
-          sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened-fallback.efi
+          [[ -f /efi/EFI/Linux/archlinux-linux.efi ]] && sbctl sign -s /efi/EFI/Linux/archlinux-linux.efi
+          [[ -f /efi/EFI/Linux/archlinux-linux-lts.efi ]] && sbctl sign -s /efi/EFI/Linux/archlinux-linux-lts.efi
+          [[ -f /efi/EFI/Linux/archlinux-linux-zen.efi ]] && sbctl sign -s /efi/EFI/Linux/archlinux-linux-zen.efi
+          [[ -f /efi/EFI/Linux/archlinux-linux-hardened.efi ]] && sbctl sign -s /efi/EFI/Linux/archlinux-linux-hardened.efi
           sbctl sign -s /efi/EFI/BOOT/BOOTX64.EFI
           sbctl sign -s /efi/EFI/systemd/systemd-bootx64.efi
           sbctl sign -s /efi/EFI/zbm/zfsbootmenu.EFI
