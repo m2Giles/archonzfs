@@ -437,6 +437,7 @@ pacstrap /mnt "${LINUXARRAY[@]}" \
       bash-completion   \
       plymouth          \
       arch-install-scripts \
+      ttf-dejavu        \
       systemd-resolvconf
 
 # Mask mkinitcpio Hook to Speed up installs
